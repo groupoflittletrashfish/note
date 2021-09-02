@@ -1,3 +1,21 @@
+<head>
+  <style>
+    .c{
+      font-size: 13px;
+    }
+    td{
+      background:powderblue
+    }
+    span{
+      background:powderblue;
+      display:inline-block;
+      padding:5px
+    }
+  </style>
+</head>
+
+<font class=c>
+
 ### k8s概念
 * 全称：Kubernetes
 * k8s进行容器化部署
@@ -22,4 +40,72 @@
   * kube-proxy：提供网络代理，负载均衡等操作
 
 ### 核心概念
-111
+  * **pod** 
+    * 最小部署单位
+    * 一组容器的集合
+    * pod之间的容器是共享网络的
+    * 生命周期是短暂的
+  * **Controller**
+    * 能够确保预期的pod副本数量
+    * 无状态应用部署：可以简单理解为可以直接使用的容器
+    * 有状态应用部署：可以简单理解为需要满足特定条件才可以使用的容器
+    * 确保所有的Node运行同一个pod
+    * 一次性任务和定时任务
+  * **service** 
+    * 定义一组pod的访问规则
+    * 简单流程来讲：service作为入口，通过controller来创建pod进行部署
+### 集群的部署（kubeamd方式，推荐）
+  1. 集群的结构为1个Master+2个Node
+  2. Master：192.168.238.130，Node：192.168.238.131，192.168.238.132
+  3. 关闭selinux，一种为临时关闭，另一种为永久关闭，建议两种都用
+      * 临时关闭：setenforce 0  
+      * 永久关闭：sed -i '/SELINUX/s/enforcing/disabled/' /etc/selinux/config ，<font color = 'red'>**需要重启**</font>  
+  4. 使用命令：sestatus查看状态
+  5. 关闭swap分区，同样有临时和永久关闭两种
+      * 临时关闭：swapoff -a
+      * 永久关闭：sed -ri 's/.*swap.*/#&/' /etc/fstab
+  6. 为三台服务器设置对用的host名称，好区分
+      * Master服务器：hostnamectl set-hostname k8smaster
+      * Node服务器（131）：hostnamectl set-hostname k8snode1
+      * Node服务器（132）：hostnamectl set-hostname k8snode2
+  7. <font color=red>在Master服务器</font>上更改hosts文件，追加三台服务器的地址和名称
+     ```
+     cat >> /etc/hosts <<EOF 
+     192.168.238.130 k8smaster
+     192.168.238.131 k8snode1
+     192.168.238.132 k8snode2
+     EOF
+     ``` 
+ 8. 时间同步
+    * 安装插件：yum install ntpdate -y 
+    * 同步：ntpdate time.windows.com
+ 9. 在三台服务器上都安装Docker(可以参看印象笔记中的docker安装)
+10. 在三台服务器上都安装kubelet,kubeadm,kubectl
+    * 如果yum没有更改过yum源，则需要更改，此处以阿里的源为主
+    * ```
+      cat > /etc/yum.repos.d/kubernetes.repo << EOF 
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
+      enabled=1
+      gpgcheck=0
+      repo_gpgcheck=0
+      gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+      EOF
+      ```
+    * yum install -y kubelet-1.18.0 kubeadm-1.18.0 kubectl-1.18.0
+    * 安装完成后设置为开机启动：systemctl enable kubelet
+11. <font color = red>**在Master服务器上**</font>执行初始化操作
+ 
+    ```
+    kubeadm init --apiserver-advertise-address=192.168.238.130 --image-repository registry.aliyuncs.com/google_containers --kubernetes-version v1.18.0 --service-cidr=10.96.0.0/12 --pod-network-cidr=10.244.0.0/16
+    ```
+    * --apiserver-advertise-address=192.168.238.130：即Master的地址
+    * --image-repository registry.aliyuncs.com/google_containers：镜像地址，就用阿里的
+    * --kubernetes-version v1.18.0：kubernetes的版本号，即刚才yum安装指定的版本
+    * --service-cidr=10.96.0.0/12：就用这个就可以了，好像挺随意的
+    * --pod-network-cidr=10.244.0.0/16：就用这个就可以了，好像挺随意的
+    * <span>执行以上命令以后可能会失败，注意是有硬件要求的。至少必须是2核以上的处理器</span>
+    * 完成后可以使用docker images查看，多出很多镜像
+    * 还是会有可能失败的，若容易出现的错误就是kubelet-check] Initial timeout of 40s passed.如果出现这个错误，先使用<font color=red>**kubeadm reset**</font>命令重置，然后再执行kubeadm init --kubernetes-version v1.18.0 --service-cidr=10.96.0.0/12 --pod-network-cidr=10.244.0.0/16，和原本的命令基本一样，至是去掉了两个参数--image-repository和--apiserver-advertise-address
+    * 虚拟机太卡，学不下去。视频看到第7集，在百度云中的架构相关->尚硅谷Kubernetes(k8s)新版
