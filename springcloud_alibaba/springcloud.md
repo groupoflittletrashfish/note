@@ -13,7 +13,7 @@
 
 <font class= 'c'>
 
-#### 前置环境
+#### 前置环境(可以不参看项目)
 1. Node.js安装
 2. 需要注册小程序服务，进入到微信平台https://mp.weixin.qq.com/wxamp/thirdtools/extend?token=674389291&lang=zh_CN，此时可以登录，用的是小号的微信，注册的邮箱是552427758@qq.com，密码：1e2ghj89,进入到开发管理->开发设置中，将APPID复制到前端项目的porject.config.json对应的appid属性上
 3. 下载小程序开发工具
@@ -144,7 +144,7 @@
   ```
 ### 负载均衡（Ribbon）
    * 依赖已经集成在nacos的依赖中了
-   * Ribbon一般都会使用Springboot提供的RestTemplate来作为Restful调用工具，随意需要在该单例上使用@LoadBalanced注解，该示例的Bean对象放在启动类上，当然也可以单独创建一个
+   * Ribbon一般都会使用Springboot提供的RestTemplate来作为Restful调用工具，所以需要在该单例上使用@LoadBalanced注解，该示例的Bean对象放在启动类上，当然也可以单独创建一个
    ```java
     @SpringBootApplication
     @MapperScan("com.itmuch")
@@ -610,3 +610,337 @@
           default:
             loggerLevel: full
     ~~~ 
+
+### Feign的配置支持项
+* java代码所支持的配置项和配置方式支持的配置项稍有不同
+* java代码支持
+   |配置项|作用|
+   |:-:|:-:|
+   |Logger.Level|	指定日志级别 |
+   |Retryer|指定重试策略|
+   |ErrorDecoder|指定错误解码器|
+   |Request.Options|超时时间|
+   |Collection<RequestInterceptor>|拦截器|
+   |SetterFactory|用于设置Hystrix的配置属性，Fgien整合Hystrix才会用|
+* 配置方式支持
+  ~~~yaml
+  feign:
+    client:
+      config:
+        feignName:
+          connectTimeout: 5000  # 相当于Request.Optionsn 连接超时时间
+          readTimeout: 5000     # 相当于Request.Options 读取超时时间
+          loggerLevel: full     # 配置Feign的日志级别，相当于代码配置方式中的Logger
+          errorDecoder: com.example.SimpleErrorDecoder  # Feign的错误解码器，相当于代码配置方式中的ErrorDecoder
+          retryer: com.example.SimpleRetryer  # 配置重试，相当于代码配置方式中的Retryer
+          requestInterceptors: # 配置拦截器，相当于代码配置方式中的RequestInterceptor
+            - com.example.FooRequestInterceptor
+            - com.example.BarRequestInterceptor
+          # 是否对404错误解码
+          decode404: false
+          encode: com.example.SimpleEncoder
+          decoder: com.example.SimpleDecoder
+          contract: com.example.SimpleContract
+  ~~~    
+
+### Feign的多参数调用(对象参数)
+* <hl>如果两个接口同时都有相同命名的FeignClient，那么默认情况下是不被允许的</hl>，举个例子：两个服务接口都有@FeignClient(name = "user-center")，那么Springboot启动将会失败。如果想要允许这种情况，则需要在配置文件中配置
+  ~~~yaml
+  spring:
+    main:
+      allow-bean-definition-overriding: true
+  ~~~
+* 简单来讲就是调用的方法参数是对象形式，直接使用是不行的，需要使用<hl>@SpringQueryMap</hl> 注解
+* 服务提供方
+  ~~~java
+    @GetMapping("/q")
+    public User queryDTO(User user) {
+        return user;
+    }
+  ~~~
+* 调用方
+  ~~~java
+  @FeignClient(name = "user-center")
+  public interface TestUserCenterFeignClient {
+
+      @GetMapping("/users/q")
+      UserDTO query(@SpringQueryMap UserDTO userDTO);
+
+  }
+  ~~~
+* 如果有多个参数，但非对象，如多个String类型，则可以不使用@SpringQueryMap注解，而是使用@RequestParam注解（未验证）
+* 如果是Post请求，则使用@RequestBody
+
+### Feign脱离Nacos使用
+* 即不通过注册中心中获取地址调用，如直接调用http://www.baidu.com
+* 此处不做介绍，意义不大
+
+### Feign性能优化（线程池）
+* 为了提高Feign的性能，需要添加如下依赖
+  ~~~xml
+        <dependency>
+            <groupId>io.github.openfeign</groupId>
+            <artifactId>feign-httpclient</artifactId>
+        </dependency>
+  ~~~
+* 并且添加配置
+  ~~~yaml
+  feign:
+    #让feign使用apache httpclient做请求
+    httpclient:
+      enabled: true
+      #feign的最大连接数
+      max-connections: 200
+      #feign单个路径的最大连接数
+      max-connections-per-route: 50
+  ~~~
+
+### 常见容错方案
+* 超时：设置比较短的超时时间
+* 限流：超过设置的阈值就拒绝
+* 仓壁模式：个人理解：类似于Docker的形式，即多个线程池形成隔离，即使A线程池崩溃了也不影响其他线程池
+* 断路器：在一定的时间内失败次数/失败率达到了阈值，进入到断路状态。请求将不再进行原来的逻辑。而在断路一定时间后，断路器将会进入到半开状态，此时允许一次请求调用原来的逻辑，如果成功，则断路器关闭，反正继续打开，直到过段时间后重试。
+  
+### Sentinel
+* 代替原本的Hystrix
+* 引入依赖
+   ~~~xml
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+   ~~~ 
+* <hl>打开Actuator监控，Actuator是Springboot提供的监控功能</hl>
+   ~~~yaml
+   management:
+    endpoints:
+      web:
+        exposure:
+          include: '*'
+   ~~~
+
+* 打开浏览器：http://localhost:8040/actuator/sentinel/
+* 此时将出现一段json内容
+  ~~~json
+    {
+    "appName": "content-center",
+    "coldFactor": "3",
+    "rules": {
+      "systemRules": [],
+      "authorityRule": [],
+      "paramFlowRule": [],
+      "flowRules": [],
+      "degradeRules": []
+    },
+    "metricsFileCharset": "UTF-8",
+    "filter": {
+      "order": -2147483648,
+      "urlPatterns": [
+        "/*"
+      ],
+      "enabled": true
+    },
+    "totalMetricsFileCount": 6,
+    "datasource": {},
+    "clientIp": "192.168.238.1",
+    "clientPort": "8719",
+    "logUsePid": false,
+    "metricsFileSize": 52428800,
+    "logDir": "C:\\Users\\noname\\logs\\csp\\"
+  }
+  ~~~
+
+### Sentinel控制台（可视化）搭建
+* 下载sentinel控制台：https://github.com/alibaba/Sentinel/releases （版本尽量相同），此处选择jar包，版本1.7.2
+* 运行jar包，java -jar,但更推荐使用如下指令启动,可以通过 -Dserver.port参数指定端口
+* > java -Dserver.port=8080 -Dcsp.sentinel.dashboard.server=localhost:8080 -Dproject.name=sentinel-dashboard -jar sentinel-dashboard.jar
+* 启动完成之后访问浏览器：http://localhost:8080/#/login
+* 账密：sentinel  sentinel
+* 将项目整合到sentinel控制台，添加配置文件
+  ~~~yaml
+  spring:
+    cloud:
+      sentinel:
+        #使sentinel能够监控到多层的url路径，大坑！！
+        filter:
+          url-patterns: /**
+        #sentinel控制台的地址
+        transport:
+          dashboard: localhost:8080
+          #client-ip和port属性在sentinel的控制台报出Connection refused: no further information相关错误的时候可以使用，没报错的话不需要
+          #client-ip: 127.0.0.1
+          #port: 8719
+  ~~~
+* 此时调用接口后再返回可视化界面，就会有相应的内容，<hl>默认为懒加载，所以需要触发接口以后再刷新页面查看，并有几秒的延迟</hl>
+### Sentinel的流量控制
+* 安装完成后，便可以在簇点链路找到对应的接口进行流控设置
+* <hl>此处有个大坑，如果有提示Invalid Type,那么很有可能是添加了sentinel-transport-simple-http这个依赖，并且这个依赖版本可能冲突，可以移除尝试一下</hl>
+* <image src="流控设置.jpg" style="zoom:50%"></image>
+* 高级选项中有三种方式：直接/关联/链路
+  * 直接：当前资源到达所设的条件时触发流量控制，该方式最简单，不细讲
+  * 关联：所关联的资源达到所设的条件时，当前的资源触发流量控制
+  * <image src="关联流控.png" style="zoom:50%"></image>
+  * 如上图：当/shares/test的QPS达到1时/shares/{id}触发流量控制
+  * 链路：当两个接口中都调用了同一个接口的时候，则所设的链路将被限流（不是很好理解，可以百度sentinel流控链路模式）
+* 流控效果
+  * 快速失败：顾名思义，直接报错
+  * Warm Up: 在一定时间内缓慢的提高阈值，比如阈值设置为100，预热时长为10，那么会将100/3设为QPS/线程数的初始阈值，并且在10内逐渐增加至100，此处的3是一个加载因子，固定的
+  * 排队等待：只适用于QPS。让请求匀速通过，如果阈值为1，则表示一秒钟只有1个请求通过。如果设置了超时时间，那么该请求如果超过设置的值，也将会丢弃。即采用了漏斗算法
+
+### Sentinel的服务降级
+* 同流控，在同一个页面可以设置，同样有三种模式
+* RT模式：
+  * RT（平均响应时间） ：当<hl>1s</hl>内持续进入的N个请求，对应时刻的平均响应时间（秒级）均超过阈值（此处是1毫秒），那么在接下的时间窗口（此处为5秒）之内，对这个方法的调用都会自动地熔断（抛出 DegradeException）。注意 Sentinel 默认统计的 RT 上限是 4900 ms，超出此阈值的都会算作 4900 ms，若需要变更此上限可以通过启动配置项 -Dcsp.sentinel.statistic.max.rt=xxx 来配置
+  * <image src="服务降级RT.png" style="zoom:50%"></image>
+* 异常比例（未截图，基本一样）
+  * 当资源的<hl>每秒</hl>请求量 >= N（可配置），并且每秒异常总数占通过量的比值超过设置的阈值之后，资源进入降级状态，即在接下设置的时间窗口之内（单位：秒），对这个方法的调用都会自动地返回。异常比率的阈值范围是 [0.0, 1.0]，代表 0% - 100%。
+* 异常数（未截图，基本一样）
+  * <hl>一分钟</hl>内的异常请求数大于所设的阈值，那么将在所设的时间窗口内该方式将进入熔断。<hl>时间窗口必须>=60</hl>
+
+### Sentinel的热点规则(另类的流控)
+* 以如下代码为例
+* ~~~java
+  @RestController
+  @RequestMapping
+  public class TestController {
+
+      @GetMapping("test-hot")
+      @SentinelResource("hot")
+      public String testHot(@RequestParam(required = false) String a, @RequestParam(required = false) String b) {
+          return a + " " + b;
+      }
+  }
+  ~~~
+* 此时可以在可视化页面中 簇点链路中找到资源名为hot的数据，点击热点按钮
+* <image src=".\热点规则.png" style="zoom:40%"></image>
+  * 参数索引：0则代表第一个参数，同理，1为第二个参数，以此类推
+* <hl>先不看参数例外项</hl>表达的意思是指：<hl>当请求接口时候带有第一个参数时</hl>，那么QPS的触发阈值是1，超过阈值将在5秒内降级。如果不带有第一个参数，那将不会进行限制
+* 例外项是指当请求即使带有第一个参数，但如果参数的值是5，那么允许的QPS不再是1，而是10000.超过10000才会在5秒内触发降级
+
+### Sentinel系统规则
+* 系统保护规则是从应用级别的入口流量进行控制，从单台机器的Load,CPU使用率，平均RT，入口QPS和并发线程数等几个维度监控应用指标，并且仅对入口流量生效。简单来讲，<hl>通过对单机性能监控来限定某个应用是否熔断</hl>
+* 在可视化页面的 系统规则->新建系统规则 处可以添加
+* Load:当系统1分钟的平均负载超于阈值，且并发线程数超过系统容量（系统容量是sentinel计算而来，不用特地关心）时触发，<hl>建议设置为CPU核心线程数*2.5。注意：该模式仅对Linux/Unix有效</hl>
+* RT:所有入口流量的平均RT达到阈值触发
+* 线程数:所有入口流量的并发线程数达到阈值触发
+* 入口QPS:所有入口流量的QPS达到阈值触发
+* CPU使用率:当系统 CPU 使用率超过阈值即触发系统保护（取值范围 0.0-1.0），比较灵敏
+
+### Sentinel代表配置规则
+* 此处不细讲，一般也不会使用
+
+### 应用端连接Sentinel控制台的可配置项（yaml配置）
+|配置项|说明|默认值|
+|:-:|:-:|:-:|
+|spring.cloud.sentinel.enabled|Sentinel自动化配置是否生效|true|
+|spring.cloud.sentinel.eager|取消Sentinel控制台懒加载|false|
+|spring.cloud.sentinel.transport.port|应用与Sentinel控制台交互的端口，应用本地会起一个该端口占用的HttpServer|8719|
+| spring.cloud.sentinel.transport.dashboard|Sentinel 控制台地址|
+|spring.cloud.sentinel.transport.heartbeat-interval-ms|应用与Sentinel控制台的心跳间隔时间|
+|spring.cloud.sentinel.transport.client-ip|客户端IP|
+|spring.cloud.sentinel.filter.order|Servlet Filter的加载顺序。Starter内部会构造这个filter|Integer.MIN_VALUE|
+|spring.cloud.sentinel.filter.url-patterns|数据类型是数组。表示Servlet Filter的url pattern集合|/*|
+|spring.cloud.sentinel.filter.enabled|Enable to instance CommonFilter|true|
+|spring.cloud.sentinel.metric.charset|metric文件字符集|	UTF-8|
+|spring.cloud.sentinel.metric.file-single-size|Sentinel metric 单个文件的大小|
+|spring.cloud.sentinel.metric.file-total-count|Sentinel metric 总文件数量|
+|spring.cloud.sentinel.log.dir|Sentinel 日志文件所在的目录|
+|spring.cloud.sentinel.log.switch-pid|Sentinel 日志文件名是否需要带上pid|false|
+|spring.cloud.sentinel.servlet.block-page|自定义的跳转 URL，当请求被限流时会自动跳转至设定好的 URL|
+|spring.cloud.sentinel.flow.cold-factor|冷启动因子|3|
+
+### Sentinel之@SentinelResource注解
+* <hl>之前都是针对于MVC的接口层面，该注解可以使方法也支持流控/降级</hl>
+* 流控/降级代码如下
+  ~~~java
+  @RestController
+  @RequestMapping
+  @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+  public class TestController {
+
+      private final TestService testService;
+
+      /**
+      * 流控演示
+      */
+      @GetMapping("test-sentinel1")
+      public String testSentinel1(@RequestParam(required = false) String a) {
+          return testService.testSentinel1(a);
+      }
+
+      /**
+      * 降级演示
+      */
+      @GetMapping("test-sentinel2")
+      public String testSentinel2(@RequestParam(required = false) String a) {
+          return testService.testSentinel2(a);
+      }
+
+  }
+  ~~~  
+
+  ~~~java
+  import com.alibaba.csp.sentinel.annotation.SentinelResource;
+  import com.alibaba.csp.sentinel.slots.block.BlockException;
+  import org.apache.commons.lang3.StringUtils;
+  import org.springframework.stereotype.Service;
+
+  /**
+  * 服务的流控和降级处理
+  * SentinelResource注解表示该方法要进行流控/降级，blockHandler表示触发流控需要执行的函数，fallback表示触发降级需要执行的函数
+  * 需要注意的是blockHandler和fallback所指定的函数要在本类中，如果是其他类可以使用fallbackClass和blockHandlerClass类来指定,且方法必须是静态的
+  * 另外blockHandler和fallback的所对应的函数必须入参和返回值和SentinelResource注解修饰的方法一样
+  * 在写完代码以后想要触发限流/降级，不要忘记在可视化界面中进行配置
+  *
+  * @author ：liwuming
+  * @date ：Created in 2021/9/27 17:02
+  */
+  @Service
+  public class TestService {
+
+      /**
+      * 触发流控，将执行本类的block函数
+      * 虽然类本身中a为空会抛出异常，但只要在没触发流控的情况下，还是会正常将异常抛出给前台
+      * 在触发流控的情况下，那么将会优先执行block中的代码，也就是给前端返回字符串"服务限流了"
+      */
+      @SentinelResource(value = "test-sentinel1", blockHandler = "block")
+      public String testSentinel1(String a) {
+          if (StringUtils.isBlank(a)) {
+              throw new RuntimeException("入参为空");
+          }
+          return a;
+      }
+
+      public String block(String a, BlockException e) {
+          System.out.println(e);
+          return "服务限流了";
+      }
+
+
+      /**
+      * 服务降级
+      * 默认情况下如果有任何异常抛出，即使sentinel上没有配置降级，也将执行降级对应的函数
+      * exceptionsToIgnore属性表示排除某个异常类，所以在a为空的情况下，错误信息将会直接返回给前端页面
+      * 当a=1的时候，由于RuntimeException并未排除，所以将会触发降级，执行fallback函数
+      * 需要非常注意的一点：异常的父子关系，如果忽略的类是父类，那么其子类也将一起被忽略
+      */
+      @SentinelResource(value = "test-sentinel2", fallback = "fallback", exceptionsToIgnore = IllegalArgumentException.class)
+      public String testSentinel2(String a) {
+          if (StringUtils.isBlank(a)) {
+              throw new IllegalArgumentException("入参为空,exceptionsToIgnore排除了IllegalArgumentException，所以将不走fallback逻辑");
+          }
+          if (StringUtils.equals("1", a)) {
+              throw new RuntimeException("未排除RuntimeException，触发降级方法fallback");
+          }
+          return a;
+      }
+
+      public String fallback(String a) {
+          return "服务降级了";
+      }
+  }
+  ~~~
