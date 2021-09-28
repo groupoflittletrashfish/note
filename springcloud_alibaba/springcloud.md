@@ -944,3 +944,88 @@
       }
   }
   ~~~
+
+### RestTemplate整合Sentinel
+* Sentinel可以限制RestTemplate调用的接口，使用注解@SentinelRestTemplate
+* <hl>如下代码是已经集成了RestTemplate，且RestTemplate放在启动类中，一般都会单独放一个类中</hl>
+  ~~~java
+  @SpringBootApplication
+  @MapperScan("com.itmuch")
+  @EnableFeignClients
+  public class ContentcenterApplication {
+
+      public static void main(String[] args) {
+          SpringApplication.run(ContentcenterApplication.class, args);
+      }
+
+
+      @Bean
+      @LoadBalanced
+      @SentinelRestTemplate
+      public RestTemplate restTemplate(){
+          return new RestTemplate();
+      }
+
+  }
+  ~~~
+  ~~~java
+  @RestController
+  @RequestMapping
+  @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+  public class TestController {
+
+      private final TestService testService;
+      private final RestTemplate restTemplate;
+
+      /**
+      * Sentinel对RestTemplate进行限制
+      * @param userId
+      * @return
+      */
+      @GetMapping("test-restTemplate-sentinel")
+      public UserDTO test(@RequestParam Integer userId) {
+          return this.restTemplate.getForObject("http://user-center/users/{userId}", UserDTO.class, userId);
+      }
+
+  }
+  ~~~
+* 此时将可以在可视化界面中查看到 /test-restTemplate-sentinel的簇点链路，并且配置流控后便可以测试
+* 另外可以在项目中控制是否让Sentinel对RestTemplate进行控制，在配置文件中添加如下即可,若是false,则不再对RestTemplate请求进行任何限制
+  ~~~yaml
+  resttemplate:
+    sentinel:
+      enabled: false
+  ~~~
+* <hl>同时@SentinelRestTemplate注解是支持降级/流控的自定义处理的，和上面一样，注解拥有属性blockHandler，blockHandlerClass等等，可以自行百度</hl>
+
+### Feign整合Sentinel
+* 同理,Sentinel也可以限制Feign的接口
+* 只需要在配置文件中添加开启
+  ~~~yaml
+  feign:
+    sentinel:
+      enabled: true
+  ~~~
+* 如果想要做服务流控降级的自定义处理，可以通过@FeignClient的属性fallback控制
+  ~~~java
+  @FeignClient(name = "user-center", fallback = UserCenterFeignClientFallback.class)
+  public interface UserCenterFeignClient {
+
+      @GetMapping("/users/{id}")
+      UserDTO findById(@PathVariable Integer id);
+
+  }
+  ~~~
+  ~~~java
+  @Component
+  public class UserCenterFeignClientFallback implements UserCenterFeignClient {
+
+      @Override
+      public UserDTO findById(Integer id) {
+          UserDTO user = new UserDTO();
+          user.setWxNickname("流量控制");
+          return user;
+      }
+  }
+  ~~~
+* 需要注意的是，UserCenterFeignClientFallback类上要有@Compoent，并且继承UserCenterFeignClient 接口
