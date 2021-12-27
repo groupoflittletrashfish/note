@@ -1674,5 +1674,34 @@
 
 ### Module
 * 暂时未学，可以参看如下文档
-* > https://vuex.vuejs.org/zh/guide/modules.html#%E6%A8%A1%E5%9D%97%E7%9A%84%E5%B1%80%E9%83%A8%E7%8A%B6%E6%80%81
+> https://vuex.vuejs.org/zh/guide/modules.html#%E6%A8%A1%E5%9D%97%E7%9A%84%E5%B1%80%E9%83%A8%E7%8A%B6%E6%80%81
+
+### 统一配置后端地址
+* 在main.js中添加如下两句
+* >// 引用axios，并设置基础URL为后端服务api地址
+let axios = require('axios')
+axios.defaults.baseURL = 'http://localhost:8088/'
+  ~~~js
+  import Vue from 'vue'
+  import App from './App.vue'
+  import router from './router'
+  import store from './store'
+  import ElementUI from 'element-ui';
+  import 'element-ui/lib/theme-chalk/index.css';
+
+  // 引用axios，并设置基础URL为后端服务api地址
+  let axios = require('axios')
+  axios.defaults.baseURL = 'http://localhost:8088/'
+
+  Vue.config.productionTip = false
+  Vue.use(ElementUI);
+
+  new Vue({
+    router,
+    store,
+    render: h => h(App)
+  }).$mount('#app')
+  ~~~
+* 引入以后正常使用即可，如
+* > axios.post("/user/deleteUser", {id: row.id}).then(() => this.initData())
  
