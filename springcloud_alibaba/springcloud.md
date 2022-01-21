@@ -1,7 +1,7 @@
 <head>
   <style>
     .c{
-      font-size: 12px;
+      font-size: 14px;
     }
     hl{
       background:#3E74;
@@ -1029,3 +1029,98 @@
   }
   ~~~
 * 需要注意的是，UserCenterFeignClientFallback类上要有@Compoent，并且继承UserCenterFeignClient 接口
+
+### 生产环境下实用sentinel
+* 推荐是使用三方的sentinel托管服务，如阿里的AHAS,已经集成了规则的持久化等，可以参看阿里的服务文档
+
+### 集群流控
+* 需要自行百度，视频表示当前版本没有一个足够好的解决方案
+  
+### 错误页优化
+* 即若想区分降级和限流，那可以使用如下方式
+
+### 自定义流控配置
+* 很多时候我们需要区分流控/降级/授权等情况，sentinel提供了一个BlockExceptionHandler接口，可以进行自定义兜底的策略
+* 首先需要在配置中打开spring.cloud.sentinel.filter.enabled = true,不是很确定是否一定需要该配置
+* 自定义流控策略,<hl>不要忘记@Component注解</hl>
+  ~~~java
+  package com.itmuch.contentcenter.sentineltest;
+
+  import com.alibaba.csp.sentinel.adapter.spring.webmvc.callback.BlockExceptionHandler;
+  import com.alibaba.csp.sentinel.slots.block.BlockException;
+  import com.alibaba.csp.sentinel.slots.block.authority.AuthorityException;
+  import com.alibaba.csp.sentinel.slots.block.degrade.DegradeException;
+  import com.alibaba.csp.sentinel.slots.block.flow.FlowException;
+  import com.alibaba.csp.sentinel.slots.block.flow.param.ParamFlowException;
+  import com.alibaba.csp.sentinel.slots.system.SystemBlockException;
+  import com.fasterxml.jackson.databind.ObjectMapper;
+  import lombok.AllArgsConstructor;
+  import lombok.Builder;
+  import lombok.Data;
+  import lombok.NoArgsConstructor;
+  import org.springframework.stereotype.Component;
+
+  import javax.servlet.http.HttpServletRequest;
+  import javax.servlet.http.HttpServletResponse;
+
+  /**
+  * 自定义的流控兜底策略，简单来讲也就是根据错误的类型来判定是那种策略，并可以返回自己想要的数据格式
+  *
+  * @author DELL
+  */
+  @Component
+  public class MyUrlBlockHandler implements BlockExceptionHandler {
+
+      @Override
+      public void handle(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, BlockException e) throws Exception {
+          ErrorMsg msg = null;
+          if (e instanceof FlowException) {
+              msg = ErrorMsg.builder()
+                      .status(100)
+                      .msg("限流了")
+                      .build();
+          } else if (e instanceof DegradeException) {
+              msg = ErrorMsg.builder()
+                      .status(101)
+                      .msg("降级了")
+                      .build();
+          } else if (e instanceof ParamFlowException) {
+              msg = ErrorMsg.builder()
+                      .status(102)
+                      .msg("热点参数限流")
+                      .build();
+          } else if (e instanceof SystemBlockException) {
+              msg = ErrorMsg.builder()
+                      .status(103)
+                      .msg("系统规则（负载/...不满足要求）")
+                      .build();
+          } else if (e instanceof AuthorityException) {
+              msg = ErrorMsg.builder()
+                      .status(104)
+                      .msg("授权规则不通过")
+                      .build();
+          }
+          // http状态码
+          httpServletResponse.setStatus(500);
+          httpServletResponse.setCharacterEncoding("utf-8");
+          httpServletResponse.setHeader("Content-Type", "application/json;charset=utf-8");
+          httpServletResponse.setContentType("application/json;charset=utf-8");
+          // spring mvc自带的json操作工具，叫jackson
+          new ObjectMapper()
+                  .writeValue(
+                          httpServletResponse.getWriter(),
+                          msg
+                  );
+      }
+  }
+
+  @Data
+  @Builder
+  @AllArgsConstructor
+  @NoArgsConstructor
+  class ErrorMsg {
+      private Integer status;
+      private String msg;
+  }
+  ~~~
+此时自定义的策略将会生效，在sentinel配置限流/降级等，将会返回对应的返回信息
