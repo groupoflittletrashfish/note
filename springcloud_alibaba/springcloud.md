@@ -13,6 +13,8 @@
 
 <font class= 'c'>
 
+[toc]
+
 #### 前置环境(可以不参看项目)
 1. Node.js安装
 2. 需要注册小程序服务，进入到微信平台https://mp.weixin.qq.com/wxamp/thirdtools/extend?token=674389291&lang=zh_CN，此时可以登录，用的是小号的微信，注册的邮箱是552427758@qq.com，密码：1e2ghj89,进入到开发管理->开发设置中，将APPID复制到前端项目的porject.config.json对应的appid属性上
@@ -1123,4 +1125,919 @@
       private String msg;
   }
   ~~~
-此时自定义的策略将会生效，在sentinel配置限流/降级等，将会返回对应的返回信息
+* 此时自定义的策略将会生效，在sentinel配置限流/降级等，将会返回对应的返回信息
+
+### 来源分区
+* Sentinel提供了RequestOriginParser接口来供我们实现来源的区分，先上代码
+  ~~~java
+  /**
+  * 这个代码的意思是检查请求的参数中是否存在origin这个参数，如果没有则报错。当然在实际的开发中可以放入请求头中。
+  * 那么在后续的请求中这个origin的值将会代表它的来源
+  * @author ：liwuming
+  * @date ：Created in 2022/1/21 11:32
+  * @description ：
+  * @modified By：
+  * @version:
+  */
+
+  @Component
+  public class MyRequestOriginParser implements RequestOriginParser {
+      @Override
+      public String parseOrigin(HttpServletRequest httpServletRequest) {
+          String origin = httpServletRequest.getParameter("origin");
+          if (StringUtils.isBlank(origin)) {
+              throw new IllegalArgumentException("origin can not be null");
+          }
+          return origin;
+      }
+  }
+  ~~~
+* 可以尝试发起一次请求，如 http://localhost:8010/shares/1?origin=noname，那么此时noname便是表示来源
+* 进入到sentinel的控制台，找到该接口进行授权，如下
+* <image src=".\来源区分_授权.jpg" style="zoom:80%"></image>
+* 此时再次调用接口，将会被拦截，由于之前配置的自定义的流量配置，则会返回
+  ~~~json
+  {"status":104,"msg":"授权规则不通过"}
+  ~~~
+* 同理，该来源也可以用来限流操作，对该接口进行限流设置
+* <image src=".\来源分区_限流.jpg" style="zoom:80%"/>
+* 此时的限流规则将只对origin=noname有效
+
+## RocketMQ
+### 简介
+* 略
+
+### MQ的选择
+* 略
+
+### 下载与安装（Windows）
+* 不详细描述了，下载zip文件并解压即可
+
+### 启动
+* 先要启动nameServer
+* 配置环境变量，ROCKETMQ_HOME，并且在path中添加%ROCKETMQ_HOME%\bin
+* 进入到安装目录的bin下，执行 start mqnamesrv.cmd
+* 然后需要启动BROKER
+* start mqbroker.cmd -n 127.0.0.1:9876 autoCreateTopicEnable=true
+
+### 可视化安装
+* 下载可视化代码，目前的新版和旧版有些区别 https://github.com/apache/rocketmq-dashboard
+* 解压后需要更改一些配置文件，由于是springboot项目，也就是在resource下的application.yml中
+* rocketmq.config.namesrvAddr,此处要更改为RocketMQ nameServer的地址，默认：127.0.0.1:9876
+* 修改完成后使用cmd不要使用powershell,进入该项目编译：mvn clean package -Dmaven.test.skip=true 
+* 编译可能会报错提升一些依赖下载失败，多试几次就可以了
+* 编译完成后可以在target下找到jar包，启动就可以了
+
+### 核心概念
+|术语|描述|
+|:-:|:-:|
+|Server Name|NameServer的作用是注册中心，类似于Zookeeper，但又有区别于它的地方。每个NameServer节点互相之间是独立的，没有任何信息交互，也就不存在任何的选主或者主从切换之类的问题，因此NameServer与Zookeeper相比更轻量级。单个NameServer节点中存储了活跃的Broker列表（包括master和slave），这里活跃的定义是与NameServer保持有心跳。nameserver接收broker的请求，注册broker的路由信息。nameserver接收client（producer/consumer）的请求，根据消息的topic获取相应的broker路由信息。（手动创建的topic可以指定broker，自动创建的topic会随机指定broker，也许指定单个或全部，topic的概念在后面）集群部署后，节点之间无任何信息同步|
+|Broker|rocketmq的核心组件，负责消息的接收、存储（持久化到磁盘）、被消费者拉取消息等功能。broker也存储消息相关的元数据，包括：消费者组、消费进度、topic&queue信息等。broker是个逻辑概念，1个broker = 1个master + 0至n个slave，具有同1个broker name的master和slave进行配对|
+|Topic|一种消息的逻辑分类（消息的类型），比如说你有订单类的消息，也有库存类的消息，那么就需要进行分类存储。生产者方面：发消息时需指定topic，可以有1-n个生产者发布1个topic的消息，也1个生产者可以发布不同topic的消息。消费者方面：收消息时需订阅topic，可以有1-n个消费者组订阅1个topic的消息，1个消费者组可以订阅不同topic的消息。1个消息必须指定1个topic，topic允许自动创建与手工创建，topic创建时需要指定broker，可以指定1个或多个，name server就是通过broker与topic的映射关系来做路由。producer和consumer在生产和消费消息时，都需要指定消息的 topic，当topic匹配时，consumer 才会消费到producer发送的消息。topic与broker是多对多的关系，一个topic分布在多个broker上，一个broker可以配置多个topic。一个topic下可以有多个queue，默认自动创建是4个，手动创建是8个。|
+|Message|message是消息的载体。每个message必须指定一个topic，相当于寄信的地址。message还有一个可选的tag设置，以便消费端可以基于tag进行过滤消息。message还有扩展的kv结构，例如你可以设置一个业务key到你的消息中，在broker上查找消息并诊断问题。|
+|Tag|Tags是Topic下的次级消息类型，一般在相同业务模块中通过引入标签来标记不同用途的消息，可以在同一个Topic下基于Tags进行消息过滤。Tags的过滤需要经过两次比对，首先会在Broker端通过Tag hashcode进行一次比对过滤，匹配成功传到consumer端后再对具体Tags进行比对，以防止Tag hashcode重复的情况。|
+|Queue|queue是消息的物理管理单位，而topic是逻辑管理单位。一个topic下可以有多个queue，默认自动创建是4个，手动创建是8个。1个message只能属于1个queue、1个topic。在rocketmq中，所有消息队列都是持久化，长度无限的数据结构。访问其中的存储单元使用offset来访问，offset 为 java long 类型，64 位，理论上在 100年内不会溢出，所以认为是长度无限。另外队列中只保存最近几天的数据，之前的数据会按照过期时间来删除。也可以认为 Message Queue是一个长度无限的数组，offset就是下标|
+|Offset|理解成消费进度，可自增。|
+|CommitLog|虽然每个topic下面有很多message queue，但是message queue本身并不存储消息。真正的消息存储会写在CommitLog的文件，message queue只是存储CommitLog中对应的位置信息，方便通过message queue找到对应存储在CommitLog的消息。不同的topic，message queue都是写到相同的CommitLog 文件，也就是说CommitLog完全的顺序写。|
+|Producer|消息的生产者，负责发送消息，将消息推送给broker。消息有3种发送方式：同步、异步、单向|
+|ProducerGroup|具有同样逻辑消费同样消息的consumer，可以归并为一个group。同一个group内的消费者，可以共同消费（集群消费模式）对应topic的消息，达到分布式并行处理（负载均衡）的功能。集群模式下，同一条消息只会被同一个 consumer group 中的一个消费者消费，不同 consumer group 的 consumer 可以消费同一条消息。广播模式下，多个 consumer 都会消费到同一条消息。|
+|Consumer|消息的消费者，从broker上拉取消息从而进行消费。rocketmq提供两种消费者。主动消费者：从broker中拉取一批消息并消费，主动权由消费者控制。被动消费者：消费者实现回调接口，一旦有消息，broker回调接口，消费者被动响应。|
+|ConsumerGroup|通常具有同样作用（同样topic）的一些producer可以归为同一个group。在事务消息机制中，如果发送某条事务消息后的producer-A宕机，使得事务消息一直处于PREPARED状态并超时，则broker会回查同一个group的其他producer，确认这条消息应该commit还是rollback。|
+|Clustering|在 Clustering 模式下，同一个 ConsumerGroup（GroupName 相同）里的每个 Consumer 只消费所订阅消息的一部分内容，同一个 ConsumerGroup 里所有的 Consumer 消费的内容合起来才是所订阅 Topic 内容的整体，从而达到负载均衡的目的。|
+|Broadcasting|在 Broadcasting 模式下，同一个 ConsumerGroup 里的每个 Consumer 都能消费到所订阅 Topic 的全部消息，也就是一个消息会被多次分发，被多个 Consumer 消费。|
+
+### 生产者代码
+* 添加核心依赖
+  ~~~xml
+          <dependency>
+              <groupId>org.apache.rocketmq</groupId>
+              <artifactId>rocketmq-spring-boot-starter</artifactId>
+              <version>2.2.0</version>
+          </dependency>
+  ~~~
+* 配置
+  ~~~yaml
+  rocketmq:
+    # 启动的name-server的服务地址
+    name-server: 127.0.0.1:9876
+    producer:
+      # 必须指定Group
+      group: test-group
+  ~~~
+* 编写代码（由于简单，就直接贴代码片段了）
+  ~~~java
+      // 注入，由于是使用lombok，所以没有@AutoWare了
+      private final RocketMQTemplate rocketMQTemplate;
+
+      //这个就是发送端的代码了，UserAddBonusMsgDTO是一个自定义的POJO，add-bonus是代表TOPIC名称
+      rocketMQTemplate.convertAndSend("add-bonus", UserAddBonusMsgDTO.builder().userId(share.getUserId()).bonuus(50).build());
+  ~~~  
+* 此时就可以在操作台中查看到该条消息了
+* <image src="MQ_消息查看.jpg" style="zoom:100%"/>
+
+### 消费者代码
+* 添加核心依赖
+  ~~~xml
+          <dependency>
+              <groupId>org.apache.rocketmq</groupId>
+              <artifactId>rocketmq-spring-boot-starter</artifactId>
+              <version>2.2.0</version>
+          </dependency>
+  ~~~
+* 配置
+  ~~~yaml
+  rocketmq:
+    # 启动的name-server的服务地址
+    name-server: 127.0.0.1:9876
+  ~~~
+* 代码比较简单，不做过多介绍
+  ~~~java
+  @Service
+  @RocketMQMessageListener(consumerGroup = "consumer-group", topic = "add-bonus")
+  @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+  public class AddBonusListener implements RocketMQListener<UserAddBonusMsgDTO> {
+
+      private final UserMapper userMapper;
+      private final BonusEventLogMapper bonusEventLogMapper;
+
+      @Override
+      public void onMessage(UserAddBonusMsgDTO message) {
+          //为用户增加积分
+          Integer userId = message.getUserId();
+          User user = this.userMapper.selectByPrimaryKey(userId);
+          user.setBonus(user.getBonus() + message.getBonus());
+          this.userMapper.updateByPrimaryKeySelective(user);
+
+          //记录日志到bonus_event_log表中
+          this.bonusEventLogMapper.insert(BonusEventLog.builder().userId(userId).value(message.getBonus())
+                  .event("CONTRIBUTE").createTime(new Date()).description("投稿加积分...").build());
+      }
+  }
+  ~~~
+
+### 事务性消息
+* RocketMQ的分布式事务流程,其实就是二次确认模式
+* <image src="RocketMQ分布式事务流程图.jpg" style="zoom:70%"/>
+* RocketMQ是支持事务消息的，发送端代码如下，省略了Controller层
+  ~~~java
+  public Share auditById(Integer id, ShareAuditDTO auditDTO) {
+          // 1. 查询share是否存在，不存在或者当前的audit_status != NOT_YET，那么抛异常
+          Share share = this.shareMapper.selectByPrimaryKey(id);
+          if (share == null) {
+              throw new IllegalArgumentException("参数非法！该分享不存在！");
+          }
+          if (!Objects.equals("NOT_YET", share.getAuditStatus())) {
+              throw new IllegalArgumentException("参数非法！该分享已审核通过或审核不通过！");
+          }
+
+          //如果是PASS，那么为发布人添加积分，这一块是核心代码
+          if (AuditStatusEnum.PASS.equals(auditDTO.getAuditStatusEnum())) {
+              //发送一个事务消息，第一个参数就是topic,第二个参数是消息对象，它可以通过MessageBuilder来构建，同时也可以写入一些自定义的头部信息，最后一个参数是arg,即参数，就是传参用的
+              this.rocketMQTemplate.sendMessageInTransaction(
+                      "add-bonus",
+                      MessageBuilder.withPayload(UserAddBonusMsgDTO.builder().userId(share.getUserId()).bonus(50).build()).setHeader(RocketMQHeaders.TRANSACTION_ID, UUID.randomUUID()).setHeader("share_id", id).build(),
+                      auditDTO);
+          } else {
+              this.auditById(id, auditDTO);
+          }
+
+
+          //加积分的操作可以作为异步，因为本身并不是审核的主要业务
+          return share;
+      }
+  ~~~
+* 同时在发送端，RocketMQ也需要监听这个消息是否能成功提交，新建一个监听器
+  ~~~java
+  package com.itmuch.contentcenter.rocketmq;
+
+  import com.itmuch.contentcenter.dao.messaging.RocketmqTransactionLogMapper;
+  import com.itmuch.contentcenter.domain.dto.content.ShareAuditDTO;
+  import com.itmuch.contentcenter.domain.entity.messaging.RocketmqTransactionLog;
+  import com.itmuch.contentcenter.service.content.ShareService;
+  import lombok.RequiredArgsConstructor;
+  import org.apache.rocketmq.spring.annotation.RocketMQTransactionListener;
+  import org.apache.rocketmq.spring.core.RocketMQLocalTransactionListener;
+  import org.apache.rocketmq.spring.core.RocketMQLocalTransactionState;
+  import org.apache.rocketmq.spring.support.RocketMQHeaders;
+  import org.springframework.beans.factory.annotation.Autowired;
+  import org.springframework.messaging.Message;
+  import org.springframework.messaging.MessageHeaders;
+
+  import java.util.Objects;
+
+  /**
+  * 事务型消息的监听类
+  *
+  * @author ：liwuming
+  * @date ：Created in 2022/2/7 16:38
+  * @description ：
+  * @modified By：
+  * @version:
+  */
+  @RocketMQTransactionListener
+  @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+  public class AddBonusTransactionListener implements RocketMQLocalTransactionListener {
+
+      //业务类，可无视
+      private final ShareService shareService;
+      //业务Mapper,可无视
+      private final RocketmqTransactionLogMapper rocketmqTransactionLogMapper;
+
+      /**
+      * 这个函数的主要作用是操作本地的事务，如果本地事务成功则提交，反之回滚
+      * @param message
+      * @param arg
+      * @return
+      */
+      @Override
+      public RocketMQLocalTransactionState executeLocalTransaction(Message message, Object arg) {
+          //可以获取消息的头部信息
+          MessageHeaders headers = message.getHeaders();
+
+          String transactionId = (String) headers.get(RocketMQHeaders.TRANSACTION_ID);
+          Integer shareId = Integer.valueOf((String) Objects.requireNonNull(headers.get("share_id")));
+
+          try {
+              //这个也是业务逻辑，代码就不贴出来了，就是将 用户的积分添加日志插入到数据库
+              this.shareService.auditByIdWithRocketMqLog(shareId, (ShareAuditDTO) arg, transactionId);
+              //如果成功则提交
+              return RocketMQLocalTransactionState.COMMIT;
+          } catch (Exception e) {
+              //反之回滚
+              return RocketMQLocalTransactionState.ROLLBACK;
+          }
+      }
+
+      /**
+      * 这个函数是一个回查，即在一些特殊情况下，那么可以根据自定义的需求来进行表的回查，通俗来讲就是有一些未知原因的消息，不确实是提交还是回滚，那么通过回查函数来确定
+      * @param message
+      * @return
+      */
+      @Override
+      public RocketMQLocalTransactionState checkLocalTransaction(Message message) {
+          MessageHeaders headers = message.getHeaders();
+
+          String transactionId = (String) headers.get(RocketMQHeaders.TRANSACTION_ID);
+          //业务逻辑：查询 积分日志表，如果表里已经有数据了，则提交，反之回滚
+          RocketmqTransactionLog rocketmqTransactionLog = rocketmqTransactionLogMapper.selectOne(RocketmqTransactionLog.builder().transactionId(transactionId).build());
+          if (rocketmqTransactionLog != null) {
+              return RocketMQLocalTransactionState.COMMIT;
+          }
+          return RocketMQLocalTransactionState.ROLLBACK;
+      }
+  }
+
+  ~~~
+* 上面的业务代码也贴出来，<hl>注意：需要@Transactional注解</hl>
+  ~~~java
+      @Transactional(rollbackFor = Exception.class)
+      public void auditByIdInDB(Integer id, ShareAuditDTO auditDTO) {
+          Share share = Share.builder()
+                  .id(id)
+                  .auditStatus(auditDTO.getAuditStatusEnum().toString())
+                  .reason(auditDTO.getReason())
+                  .build();
+          this.shareMapper.updateByPrimaryKeySelective(share);
+
+          // 4. 把share写到缓存
+      }
+  ~~~
+  ~~~java
+      @Transactional(rollbackFor = Exception.class)
+      public void auditByIdWithRocketMqLog(Integer id, ShareAuditDTO auditDTO, String transactionId) {
+          this.auditByIdInDB(id, auditDTO);
+
+          this.rocketmqTransactionLogMapper.insertSelective(
+                  RocketmqTransactionLog.builder()
+                          .transactionId(transactionId)
+                          .log("审核分享...")
+                          .build()
+          );
+          log.info("日志添加完毕...");
+      }
+  ~~~
+* 消费端的代码还是和以前一样，不需要做任何的更改
+
+
+##  Spring Cloud Stream
+### 简介
+* Spring Cloud Stream 是一个用来为微服务应用构建消息驱动能力的框架。它可以基于 Spring Boot 来创建独立的、可用于生产的 Spring 应用程序。Spring Cloud Stream 为一些供应商的消息中间件产品提供了个性化的自动化配置实现，并引入了发布-订阅、消费组、分区这三个核心概念。通过使用 Spring Cloud Stream，可以有效简化开发人员对消息中间件的使用复杂度，让系统开发人员可以有更多的精力关注于核心业务逻辑的处理。但是目前 Spring Cloud Stream 只支持 RabbitMQ 和 Kafka 的自动化配置
+
+### 模型
+* ![](./stream模型.jpg)
+* 简而言之：stream就是一个消息驱动，inputs和outputs即是指stream与之绑定的消息中间件，如RabbitMQ，kafka等，这样就可以直接调用stream的API发送消息等，就是帮我们管理消息中间件
+
+### 发送端代码编写
+* 引入依赖,该依赖本身就包含rocketmq-spring-boot-starter，<hl>所以要删掉之前的starter以防止冲突</hl>
+  ~~~xml
+          <dependency>
+              <groupId>com.alibaba.cloud</groupId>
+              <artifactId>spring-cloud-starter-stream-rocketmq</artifactId>
+          </dependency>
+  ~~~
+* <hl>但是上面的依赖所使用的MQ的版本比较老，所以和上述的代码可能会有一些区别，如：rocketMQTemplate.sendMessageInTransaction这个函数新版本去除了group这个参数，而老版本还有这个参数,需要注意一下</hl>
+* <hl>启动类添加注解 @EnableBinding(Source.class) </hl>
+* 添加配置文件,由于是yaml，不方便截图，直接使用键值对的形式了
+* spring.cloud.stream.rocketmq.binder.name-server=127.0.0.1:9876  #对应的值就是rocketMQ的name-server的启动服务ip:port
+* 配置文件
+  ~~~yaml
+  spring:
+    cloud:
+      stream:
+        rocketmq:
+          binder:
+            #RocketMQ的name-server地址
+            name-server: 127.0.0.1:9876
+        bindings:
+          #output其实指的就是目标MQ，即发送消息到哪里
+          output:
+            # 指定topic
+            destination: stream-test-topic
+  ~~~
+* 编写一个最简单的发送端代码
+  ~~~java
+  @RestController
+  @RequestMapping("/test")
+  public class TestController {
+
+      /**
+      * 这个注入的对象就是启动类上指定的Source.class
+      */
+      @Autowired
+      private Source source;
+
+      @GetMapping("/test-stream")
+      public String testStream() {
+          //有两个发送消息，另一个是带有超时时间的消息
+          this.source.output().send(MessageBuilder.withPayload("消息体").build());
+          return "success";
+      }
+  }
+  ~~~
+
+### 消费端代码编写
+* 同样的，需要添加依赖
+* 在启动类上添加注解 @EnableBinding(Sink.class)
+* 配置类
+  ~~~yaml
+  spring:
+    cloud:
+      stream:
+        rocketmq:
+          binder:
+            name-server: 127.0.0.1:9876
+        bindings:
+          #input就是指消费来源
+          input:
+            #topic名称
+            destination: stream-test-topic
+            #RocketMQ一定要设置，但是随意即可，如果是别的MQ则不需要
+            group: binder-group
+  ~~~
+* 编写监听器
+  ~~~java
+  @Service
+  @Slf4j
+  public class TestStreamConsumer {
+
+      @StreamListener(Sink.INPUT)
+      public void receive(String messsage) {
+          log.info("通过stream收到的消息:{}", messsage);
+      }
+  }
+  ~~~
+
+### Spring Cloud Stream 自定义接口
+* 当然需要先自定义一个接口
+  ~~~java
+  public interface MySink {
+
+      String MY_INPUT = "my-input";
+
+      @Input(MY_INPUT)
+      SubscribableChannel input();
+  }
+  ~~~
+* 并且在启动类上需要添加自定义的接口
+  ~~~java
+  @SpringBootApplication
+  @MapperScan("com.itmuch.usercenter.dao")
+  @EnableBinding({Sink.class, MySink.class})
+  public class UserCenterApplication {
+
+      public static void main(String[] args) {
+          SpringApplication.run(UserCenterApplication.class, args);
+      }
+
+  }
+  ~~~
+* 修改配置,主要就是添加了一个my-input，这个名字是接口中定义的常量字符串
+  ~~~yaml
+  spring:
+    cloud:
+      stream:
+        rocketmq:
+          binder:
+            name-server: 127.0.0.1:9876
+        bindings:
+          #input就是指消费来源
+          input:
+            #topic名称
+            destination: stream-test-topic
+            #RocketMQ一定要设置，但是随意即可，如果是别的MQ则不需要
+            group: binder-group
+          #这个名字要与自定义的常量名称相同才可以
+          my-input:
+            destination: stream-test-topic
+            group: my-group
+  ~~~
+* 自定义一个监听器，来消费消息
+  ~~~java
+  @Service
+  @Slf4j
+  public class MyTestStreamConsumer {
+
+      @StreamListener(MySink.MY_INPUT)
+      public void receive(String message) {
+          log.info("通过stream收到了消息：{}", message); 
+      }
+  }
+  ~~~
+
+### Stream 消费过滤
+* 消费者端可以条件过滤一些消息从而进行消费，这个Stream也是支持的，这个直接参看如下博客
+* > https://blog.csdn.net/lilizhou2008/article/details/98561726
+
+### Stream全局异常处理
+* 如果在MQ中消息出现了错误，那么则可以捕获并处理，Stream也提供了相应的异常处理
+  ~~~java
+  @Service
+  @Slf4j
+  public class MyTestStreamConsumer {
+
+      @StreamListener(MySink.MY_INPUT)
+      public void receive(String message) {
+          log.info("通过stream收到了消息：{}", message);
+          throw new RuntimeException("手动触发异常来验证全局异常处理是否生效");
+      }
+
+
+      /**
+      * 全局异常处理
+      */
+      @StreamListener("errorChannel")
+      public void error(Message message) {
+          ErrorMessage errorMessage = (ErrorMessage) message;
+          log.error("发生异常，errorMsg = {}", errorMessage);
+      }
+  }
+  ~~~
+* 还有一些异常处理，可以参看如下博客
+* > https://www.imooc.com/article/290435
+
+### Stream发送事务性消息
+* 还是以之前的事务消息为例，发送消息的代码基本没有变动，唯一变动的是传参是通过消息体的Header来传递
+  ~~~java
+      public Share auditById(Integer id, ShareAuditDTO auditDTO) {
+          // 1. 查询share是否存在，不存在或者当前的audit_status != NOT_YET，那么抛异常
+          Share share = this.shareMapper.selectByPrimaryKey(id);
+          if (share == null) {
+              throw new IllegalArgumentException("参数非法！该分享不存在！");
+          }
+          if (!Objects.equals("NOT_YET", share.getAuditStatus())) {
+              throw new IllegalArgumentException("参数非法！该分享已审核通过或审核不通过！");
+          }
+
+          //如果是PASS，那么为发布人添加积分，这一块是核心代码
+          if (AuditStatusEnum.PASS.equals(auditDTO.getAuditStatusEnum())) {
+              //发送一个事务消息，第一个参数就是topic,第二个参数是消息对象，它可以通过MessageBuilder来构建，同时也可以写入一些自定义的头部信息，最后一个参数是arg,即参数，就是传参用的
+  //            this.rocketMQTemplate.sendMessageInTransaction("mygroup",
+  //                    "add-bonus",
+  //                    MessageBuilder.withPayload(UserAddBonusMsgDTO.builder().userId(share.getUserId()).bonus(50).build()).setHeader(RocketMQHeaders.TRANSACTION_ID, UUID.randomUUID()).setHeader("share_id", id).build(),
+  //                    auditDTO);
+
+              //使用stream来发送MQ消息,如果要传递参数的话可以将参数都放在Header里面一起传递
+              this.source.output().send(MessageBuilder.withPayload(UserAddBonusMsgDTO.builder().userId(share.getUserId()).bonus(50).build())
+                      .setHeader(RocketMQHeaders.TRANSACTION_ID, UUID.randomUUID())
+                      .setHeader("share_id", id)
+                      .setHeader("dto", JSON.toJSONString(auditDTO))
+                      .build());
+          } else {
+              this.auditById(id, auditDTO);
+          }
+
+
+          //加积分的操作可以作为异步，因为本身并不是审核的主要业务
+          return share;
+      }
+  ~~~
+* 发送端的事务监听基本也没有太大变动,无非就是参数从头部获取
+  ~~~java
+  @RocketMQTransactionListener(txProducerGroup = "mygroup")
+  @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+  public class AddBonusTransactionListener implements RocketMQLocalTransactionListener {
+
+      //业务类，可无视
+      private final ShareService shareService;
+      //业务Mapper,可无视
+      private final RocketmqTransactionLogMapper rocketmqTransactionLogMapper;
+
+      /**
+      * 这个函数的主要作用是操作本地的事务，如果本地事务成功则提交，反之回滚
+      *
+      * @param message
+      * @param arg
+      * @return
+      */
+      @Override
+      public RocketMQLocalTransactionState executeLocalTransaction(Message message, Object arg) {
+          //可以获取消息的头部信息
+          MessageHeaders headers = message.getHeaders();
+
+          String transactionId = (String) headers.get(RocketMQHeaders.TRANSACTION_ID);
+          Integer shareId = Integer.valueOf((String) Objects.requireNonNull(headers.get("share_id")));
+
+          String dtoString = (String)headers.get("dto");
+          ShareAuditDTO auditDTO = JSON.parseObject(dtoString, ShareAuditDTO.class);
+
+          try {
+              //这个也是业务逻辑，代码就不贴出来了，就是将 用户的积分添加日志插入到数据库
+              this.shareService.auditByIdWithRocketMqLog(shareId, auditDTO, transactionId);
+              //如果成功则提交
+              return RocketMQLocalTransactionState.COMMIT;
+          } catch (Exception e) {
+              //反之回滚
+              return RocketMQLocalTransactionState.ROLLBACK;
+          }
+      }
+
+      /**
+      * 这个函数是一个回查，即在一些特殊情况下，那么可以根据自定义的需求来进行表的回查，通俗来讲就是有一些未知原因的消息，不确实是提交还是回滚，那么通过回查函数来确定
+      *
+      * @param message
+      * @return
+      */
+      @Override
+      public RocketMQLocalTransactionState checkLocalTransaction(Message message) {
+          MessageHeaders headers = message.getHeaders();
+
+          String transactionId = (String) headers.get(RocketMQHeaders.TRANSACTION_ID);
+          //业务逻辑：查询 积分日志表，如果表里已经有数据了，则提交，反之回滚
+          RocketmqTransactionLog rocketmqTransactionLog = rocketmqTransactionLogMapper.selectOne(RocketmqTransactionLog.builder().transactionId(transactionId).build());
+          if (rocketmqTransactionLog != null) {
+              return RocketMQLocalTransactionState.COMMIT;
+          }
+          return RocketMQLocalTransactionState.ROLLBACK;
+      }
+  }
+  ~~~
+* 但是此时需要配置一下配置文件,注意是rocketmq标签下一层的bindings
+  ~~~yaml
+  spring:
+    cloud:
+      stream:
+        rocketmq:
+          binder:
+            #RocketMQ的name-server地址
+            name-server: 127.0.0.1:9876
+          #这一段是事务性消息的部分
+          bindings:
+            output:
+              producer:
+                #是否是事务性消息
+                transactional: true
+                #这个值就是本地监听器@RocketMQTransactionListener(txProducerGroup = "mygroup")对应的值
+                group: mygroup
+          #这一段是事务性消息的部分
+        bindings:
+          #output其实指的就是目标MQ，即发送消息到哪里
+          output:
+            # 指定topic
+            destination: stream-test-topic
+  ~~~
+
+### Stream 消费事务性消息
+* 配置文件基本不需要修改,唯一要改的是监听的topic，要改成发送端一致
+  ~~~yaml
+  spring:
+    cloud:
+      stream:
+        rocketmq:
+          binder:
+            name-server: 127.0.0.1:9876
+        bindings:
+          #input就是指消费来源
+          input:
+            #topic名称
+            destination: add-bonus
+            #RocketMQ一定要设置，但是随意即可，如果是别的MQ则不需要
+            group: binder-group
+  ~~~
+* 消费的代码如下
+  ~~~java
+  /**
+  * @author ：liwuming
+  * @date ：Created in 2022/2/9 16:07
+  * @description ：
+  * @modified By：
+  * @version:
+  */
+  @Service
+  @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+  public class AddBonusStreamConsumer {
+
+      private final UserService userService;
+
+      /**
+      * 接收事务性消息
+      * @param message
+      */
+      @StreamListener(Sink.INPUT)
+      public void receive(UserAddBonusMsgDTO message) {
+          //这个就是业务逻辑，没什么好讲的
+          userService.addBonus(message);
+      }
+  }
+  ~~~
+* 业务代码也贴出来，如下：
+  ~~~java
+      @Transactional(rollbackFor = Exception.class)
+      public void addBonus(UserAddBonusMsgDTO msgDTO) {
+          // 1. 为用户加积分
+          Integer userId = msgDTO.getUserId();
+          Integer bonus = msgDTO.getBonus();
+          User user = this.userMapper.selectByPrimaryKey(userId);
+
+          user.setBonus(user.getBonus() + bonus);
+          this.userMapper.updateByPrimaryKeySelective(user);
+
+          // 2. 记录日志到bonus_event_log表里面
+          this.bonusEventLogMapper.insert(
+              BonusEventLog.builder()
+                  .userId(userId)
+                  .value(bonus)
+                  .event(msgDTO.getEvent())
+                  .createTime(new Date())
+                  .description(msgDTO.getDescription())
+                  .build()
+          );
+          log.info("积分添加完毕...");
+      }
+  ~~~
+
+## 网关（Getway）
+### 概念
+* 路由：路由是构建网关的基本模块，它由ID、目标URI，一系列的断言和过滤器组成，如果断言为true则匹配该路由
+* Predicate(断言)：参考的是Java8的java.util.function.Predicate
+开发人员可以匹配HTTP请求中的所有内容(例如请求头或请求参数)，如果请求与断言相匹配则进行路由
+* Filter(过滤)：指的是Spring框架中GatewayFilyter的实例，使用过滤器，可以在请求被路由前或者之后进行修改
+
+### 网关集成
+* 引入依赖,核心依赖也就是nacos,getway,spring cloud，由于放在了子模块下，父类的没有贴出来
+  ~~~xml
+  <!--        这边有一个坑，网关是不能加入starter-web这个包的，否则启动会报错。但是父pom中又引用了，所以将这个包在子项目中重写一遍，并且scope改为test就可以让它失效-->
+          <dependency>
+              <groupId>org.springframework.boot</groupId>
+              <artifactId>spring-boot-starter-web</artifactId>
+              <scope>test</scope>
+          </dependency>
+          <!--        网关的依赖包，但是启动有可能报错之类的，一般都是版本问题引起的-->
+          <dependency>
+              <groupId>org.springframework.cloud</groupId>
+              <artifactId>spring-cloud-starter-gateway</artifactId>
+              <version>2.2.1.RELEASE</version>
+          </dependency>
+  ~~~
+
+* 配置文件
+  ~~~yaml
+  server:
+    port: 8012
+  spring:
+    application:
+      name: gateway
+    cloud:
+      nacos:
+        discovery:
+          server-addr: localhost:8848
+      #网关配置
+      gateway:
+        discovery:
+          locator:
+            #让gateway通过服务发现组件找到其他的微服务
+            enabled: true
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: '*'
+    endpoint:
+      health:
+        show-details: always
+  ~~~
+* 配置完成后启动项目，此时在nacos中若可以正常看到gateway服务即成功
+* 验证：使用gateway的ip:port/其他服务名称/其他服务的访问路径 即可转发请求，如：http://localhost:8012/user-center/users/ping
+
+### Gateway路由谓词工厂
+#### 最简单的全局转发
+* 如上使用的配置是通过Gateway自定义映射的，那么先看一下如下的配置
+  ~~~yaml
+  spring:
+    application:
+      name: gateway
+    cloud:
+      nacos:
+        discovery:
+          server-addr: localhost:8848
+      #网关配置
+      gateway:
+        routes:
+          #id:自定义即可，但是要唯一
+          - id: user-center
+            #目的地址，即转发到哪里
+            uri: http://localhost:8080
+            #简单理解就是如果访问的是以下路径，则会将请求转发到uri所在的地址
+            predicates:
+              - Path=/**
+  ~~~
+* 如上，简单来讲，访问GATEWAY_URL/** 都会转发到 http://localhost:8080 该地址上去
+#### 精确匹配 
+  ~~~yaml
+      #网关配置
+      gateway:
+        routes:
+          #id:自定义即可，但是要唯一
+          - id: user-center
+            #目的地址，即转发到哪里,lb://XXX形式表示的是nocos中服务的名称。当然也可以写具体的ip地址
+            uri: lb://user-center/users/ping
+            predicates:
+              # 访问GATEWAY_URL/users/ping将会转发到http://localhost:8080/users/ping
+              - Path=/users/ping
+  ~~~
+#### 其他内置的谓词工厂
+|谓词|作用|参数|
+|:-:|:-:|:-:|
+|After|请求时的时间在配置的时间后时转发该请求	|一个带有时区的具体时间|
+|Before|请求时的时间在配置的时间前时转发该请求	|一个带有时区的具体时间|
+|Between|请求时的时间在配置的时间段内时转发该请求	|一个带有时区的具体时间段|
+|Cookie|请求时携带的Cookie名称及值与配置的名称及值相符时转发该请求	|Cookie的名称及值，支持使用正则表达式来匹配值|
+|Header|请求时携带的Header名称及值与配置的名称及值相符时转发该请求	|Header的名称及值，支持使用正则表达式来匹配值|
+|Host|请求时名为Host的Header的值与配置的值相符时转发该请求	|Host的值，支持配置多个且支持使用通配符|
+|Method|请求时所使用的HTTP方法与配置的请求方法相符时转发该请求	|HTTP请求方法，例如GET、POST等|
+|Path|请求时所访问的路径与配置的路径相匹配时转发该请求	|通配符、占位符或具体的接口路径，可以配置多个|
+|Query|请求时所带有的参数名称与配置的参数名称相符时转发该请求	|参数名称和参数值（非必须），支持使用正则表达式对参数值进行匹配|
+|RemoteAddr|请求时的IP地址与配置的IP地址相符时转发该请求	|IP地址或IP段|
+
+#### 其他谓词的使用
+* > https://www.cnblogs.com/maggieq8324/p/15354319.html
+
+#### 自定义路由谓词
+* 首先先定义一个自定义的参数在配置文件中，此处是TimeBetween
+  ~~~yaml
+  spring:
+    application:
+      name: gateway
+    cloud:
+      nacos:
+        discovery:
+          server-addr: localhost:8848
+      #网关配置
+      gateway:
+        routes:
+          #id:自定义即可，但是要唯一
+          - id: user-center
+            #目的地址，即转发到哪里,lb://XXX形式表示的是nocos中服务的名称。当然也可以写具体的ip地址
+            uri: lb://user-center/users/ping
+            predicates:
+              # 访问GATEWAY_URL/users/ping将会转发到http://localhost:8080/users/ping
+              - Path=/users/ping
+              - #自定义的参数，是指一个区间，在该时间内进行请求转发，对于时间spring有默认的处理方式，没仔细研究可自行百度
+              - TimeBetween=上午8:00,下午10:00
+  ~~~
+* 编写一个参数接收类，来对应配置文件中的参数,直接使用了lombok
+  ~~~java
+  @Data
+  public class TimeBetweenConfig {
+
+      private LocalTime start;
+      private LocalTime end;
+  }
+  ~~~
+* 最核心的类，如下
+  ~~~java
+  /**
+  * 类的名称必须以RoutePredicateFactory结尾
+  *
+  * @author ：liwuming
+  * @date ：Created in 2022/2/10 16:50
+  * @description ：
+  * @modified By：
+  * @version:
+  */
+  @Component
+  public class TimeBetweenRoutePredicateFactory extends AbstractRoutePredicateFactory<TimeBetweenConfig> {
+
+
+      public TimeBetweenRoutePredicateFactory() {
+          super(TimeBetweenConfig.class);
+      }
+
+      /**
+      * 这个就是核心实现
+      *
+      * @param config
+      * @return
+      */
+      @Override
+      public Predicate<ServerWebExchange> apply(TimeBetweenConfig config) {
+          LocalTime start = config.getStart();
+          LocalTime end = config.getEnd();
+          //匿名内部类的写法，为了高大上直接写成lambda表达式
+  //        Predicate<ServerWebExchange> serverWebExchangePredicate = exchange -> {
+  //            LocalTime now = LocalTime.now();
+  //            return now.isAfter(start) && now.isBefore(end);
+  //        };
+          return exchange -> {
+              LocalTime now = LocalTime.now();
+              return now.isAfter(start) && now.isBefore(end);
+          };
+      }
+
+      /**
+      * 这个函数的作用是用来识别参数的，即 定义的参数是 TimeBetween=09:00,17:00,那么它将映射到我们自定义的泛型中，也就是TimeBetweenConfig对象中去
+      * 而这个顺序就需要该函数指定，即09：00对应start变量，17：00对应end变量
+      *
+      * @return
+      */
+      @Override
+      public List<String> shortcutFieldOrder() {
+          return Arrays.asList("start", "end");
+      }
+  }
+  ~~~
+#### Gateway内置过滤器
+* 由于内置过滤器特别多，直接参看博客 
+* > https://blog.csdn.net/m0_48639280/article/details/108312276
+* 以AddRequestHeader为例，直接在配置文件中配置一下
+  ~~~yaml
+    #网关配置
+    gateway:
+      routes:
+        #id:自定义即可，但是要唯一
+        - id: user-center
+          #目的地址，即转发到哪里,lb://XXX形式表示的是nocos中服务的名称。当然也可以写具体的ip地址
+          uri: lb://user-center/users/ping
+          predicates:
+            # 访问GATEWAY_URL/users/ping将会转发到http://localhost:8080/users/ping
+            - Path=/users/ping
+          filters:
+            # 往头部消息添加name=noname
+            - AddRequestHeader=name,noname
+  ~~~
+* 这个想要验证的话可以在NettyRoutingFilter这个类的filter函数进行debug,debug到filtered.forEach(httpHeaders::set);这一句就可以查看Header中的内容了
+
+#### 自定义过滤器工厂
+* 自定义一个前置日志过滤器，我们可以添加自定义的参数，如PreLog
+  ~~~yaml
+      #网关配置
+      gateway:
+        routes:
+          #id:自定义即可，但是要唯一
+          - id: user-center
+            #目的地址，即转发到哪里,lb://XXX形式表示的是nocos中服务的名称。当然也可以写具体的ip地址
+            uri: lb://user-center/users/ping
+            predicates:
+              # 访问GATEWAY_URL/users/ping将会转发到http://localhost:8080/users/ping
+              - Path=/users/ping
+            filters:
+              - PreLog=a,b
+  ~~~
+* 编写过滤器
+  ~~~java
+  /**
+  * 类名必须以GatewayFilterFactory结尾
+  *
+  * @author ：liwuming
+  * @date ：Created in 2022/2/11 14:43
+  * @description ：
+  * @modified By：
+  * @version:
+  */
+  @Slf4j
+  @Component
+  public class PreLogGatewayFilterFactory extends AbstractNameValueGatewayFilterFactory {
+      @Override
+      public GatewayFilter apply(NameValueConfig config) {
+          //需要注意的是 业务的逻辑要卸载这个lanmda表达式里面，不然会出现多次调用的情况
+          return ((exchange, chain) -> {
+              log.info("请求进来了...拿到参数：{}，{}", config.getName(), config.getValue());
+              //获取请求数据，mutate()表示更改，但实际上这边偷懒什么都没做
+              ServerHttpRequest modifiedRequest = exchange.getRequest().mutate().build();
+              //同上，将更改后的request放入exchange，只不过上面request并没有做任何更改
+              ServerWebExchange modifiedExchange = exchange.mutate().request(modifiedRequest).build();
+              //继续执行下一个过滤器
+              return chain.filter(modifiedExchange);
+          });
+      }
+  }
+  ~~~
