@@ -2046,3 +2046,396 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
 * 由于没有登录，那么则会跳转到server的登录页：http://localhost:8082/login
 * 此时输入账号密码，是在server中的自定义登录逻辑中配置的，即 UserService类，写死了admin,123456
 * 输入完成后由于开启了自动授权，页面会立马跳回到刚才访问的地址：http://localhost:8083/user/getCurrentUser，并展示数据
+
+
+### 动态权限控制
+* 实际开发中，基本上都是将权限配置在数据库中，很少会写死
+* 如下是一份简单的5表权限控制，<hl>sys_menu这个表暂时可以先不看，由于只是演示，这个表的设计有很大问题。正常来讲，角色对应权限，权限对应资源，这个sql中相当于跳开了角色和权限的关联，直接在Permissions表中填写了资源路径，所以只是demo</hl>
+    ~~~sql
+    /*
+    Navicat Premium Data Transfer
+
+    Source Server         : 本地
+    Source Server Type    : MySQL
+    Source Server Version : 50736
+    Source Host           : localhost:3306
+    Source Schema         : yz_demo
+
+    Target Server Type    : MySQL
+    Target Server Version : 50736
+    File Encoding         : 65001
+
+    Date: 23/02/2022 11:13:39
+    */
+
+    SET NAMES utf8mb4;
+    SET FOREIGN_KEY_CHECKS = 0;
+
+    -- ----------------------------
+    -- Table structure for permissions
+    -- ----------------------------
+    DROP TABLE IF EXISTS `permissions`;
+    CREATE TABLE `permissions`  (
+    `role` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+    `resource` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+    `action` varchar(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+    UNIQUE INDEX `uk_role_permission`(`role`, `resource`, `action`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+
+    -- ----------------------------
+    -- Records of permissions
+    -- ----------------------------
+    INSERT INTO `permissions` VALUES ('1', '/demo/get', '1');
+    INSERT INTO `permissions` VALUES ('2', '/demo/get', 'GET');
+
+    -- ----------------------------
+    -- Table structure for sys_menu
+    -- ----------------------------
+    DROP TABLE IF EXISTS `sys_menu`;
+    CREATE TABLE `sys_menu`  (
+    `menu_id` bigint(20) NOT NULL,
+    `name` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '菜单名称',
+    `permission` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '菜单权限标识',
+    `path` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '前端URL',
+    `parent_id` bigint(20) NULL DEFAULT NULL COMMENT '父菜单ID',
+    `icon` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '图标',
+    `sort_order` int(11) NOT NULL DEFAULT 0 COMMENT '排序值',
+    `keep_alive` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '0' COMMENT '0-开启，1- 关闭',
+    `type` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '菜单类型 （0菜单 1按钮）',
+    `del_flag` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '0' COMMENT '逻辑删除标记(0--正常 1--删除)',
+    `create_by` varchar(64) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '创建人',
+    `create_time` datetime(0) NULL DEFAULT NULL COMMENT '创建时间',
+    `update_by` varchar(64) CHARACTER SET utf8 COLLATE utf8_general_ci NULL DEFAULT NULL COMMENT '修改人',
+    `update_time` datetime(0) NULL DEFAULT NULL COMMENT '更新时间',
+    PRIMARY KEY (`menu_id`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '菜单权限表' ROW_FORMAT = Dynamic;
+
+    -- ----------------------------
+    -- Records of sys_menu
+    -- ----------------------------
+    INSERT INTO `sys_menu` VALUES (1000, '权限管理', NULL, '/admin', -1, 'icon-quanxianguanli', 1, '0', '0', '0', ' ', '2018-09-28 08:29:53', ' ', '2020-03-11 23:58:18');
+    INSERT INTO `sys_menu` VALUES (1100, '用户管理', NULL, '/admin/user/index', 1000, 'icon-yonghuguanli', 0, '0', '0', '0', ' ', '2017-11-02 22:24:37', ' ', '2020-03-12 00:12:57');
+    INSERT INTO `sys_menu` VALUES (1101, '用户新增', 'sys_user_add', NULL, 1100, NULL, 0, '0', '1', '0', ' ', '2017-11-08 09:52:09', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1102, '用户修改', 'sys_user_edit', NULL, 1100, NULL, 0, '0', '1', '0', ' ', '2017-11-08 09:52:48', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1103, '用户删除', 'sys_user_del', NULL, 1100, NULL, 0, '0', '1', '0', ' ', '2017-11-08 09:54:01', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1104, '导入导出', 'sys_user_import_export', NULL, 1100, NULL, 0, '0', '1', '0', ' ', '2017-11-08 09:54:01', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1200, '菜单管理', NULL, '/admin/menu/index', 1000, 'icon-caidanguanli', 0, '0', '0', '0', ' ', '2017-11-08 09:57:27', ' ', '2020-03-12 00:13:52');
+    INSERT INTO `sys_menu` VALUES (1201, '菜单新增', 'sys_menu_add', NULL, 1200, NULL, 0, '0', '1', '0', ' ', '2017-11-08 10:15:53', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1202, '菜单修改', 'sys_menu_edit', NULL, 1200, NULL, 0, '0', '1', '0', ' ', '2017-11-08 10:16:23', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1203, '菜单删除', 'sys_menu_del', NULL, 1200, NULL, 0, '0', '1', '0', ' ', '2017-11-08 10:16:43', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1300, '角色管理', NULL, '/admin/role/index', 1000, 'icon-jiaoseguanli', 0, '0', '0', '0', ' ', '2017-11-08 10:13:37', ' ', '2020-03-12 00:15:40');
+    INSERT INTO `sys_menu` VALUES (1301, '角色新增', 'sys_role_add', NULL, 1300, NULL, 0, '0', '1', '0', ' ', '2017-11-08 10:14:18', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1302, '角色修改', 'sys_role_edit', NULL, 1300, NULL, 0, '0', '1', '0', ' ', '2017-11-08 10:14:41', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1303, '角色删除', 'sys_role_del', NULL, 1300, NULL, 0, '0', '1', '0', ' ', '2017-11-08 10:14:59', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1304, '分配权限', 'sys_role_perm', NULL, 1300, NULL, 0, '0', '1', '0', ' ', '2018-04-20 07:22:55', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1400, '部门管理', NULL, '/admin/dept/index', 1000, 'icon-web-icon-', 0, '0', '0', '0', ' ', '2018-01-20 13:17:19', ' ', '2020-03-12 00:15:44');
+    INSERT INTO `sys_menu` VALUES (1401, '部门新增', 'sys_dept_add', NULL, 1400, NULL, 0, '0', '1', '0', ' ', '2018-01-20 14:56:16', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1402, '部门修改', 'sys_dept_edit', NULL, 1400, NULL, 0, '0', '1', '0', ' ', '2018-01-20 14:56:59', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (1403, '部门删除', 'sys_dept_del', NULL, 1400, NULL, 0, '0', '1', '0', ' ', '2018-01-20 14:57:28', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2000, '系统管理', NULL, '/setting', -1, 'icon-xitongguanli', 2, '0', '0', '0', ' ', '2017-11-07 20:56:00', ' ', '2020-03-11 23:52:53');
+    INSERT INTO `sys_menu` VALUES (2100, '日志管理', NULL, '/admin/log/index', 2000, 'icon-rizhiguanli', 0, '0', '0', '0', ' ', '2017-11-20 14:06:22', ' ', '2020-03-12 00:15:49');
+    INSERT INTO `sys_menu` VALUES (2101, '日志删除', 'sys_log_del', NULL, 2100, NULL, 0, '0', '1', '0', ' ', '2017-11-20 20:37:37', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2102, '导入导出', 'sys_log_import_export', NULL, 2100, NULL, 0, '0', '1', '0', ' ', '2017-11-08 09:54:01', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2200, '字典管理', NULL, '/admin/dict/index', 2000, 'icon-navicon-zdgl', 0, '0', '0', '0', ' ', '2017-11-29 11:30:52', ' ', '2020-03-12 00:15:58');
+    INSERT INTO `sys_menu` VALUES (2201, '字典删除', 'sys_dict_del', NULL, 2200, NULL, 0, '0', '1', '0', ' ', '2017-11-29 11:30:11', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2202, '字典新增', 'sys_dict_add', NULL, 2200, NULL, 0, '0', '1', '0', ' ', '2018-05-11 22:34:55', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2203, '字典修改', 'sys_dict_edit', NULL, 2200, NULL, 0, '0', '1', '0', ' ', '2018-05-11 22:36:03', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2300, '令牌管理', NULL, '/admin/token/index', 2000, 'icon-denglvlingpai', 0, '0', '0', '0', ' ', '2018-09-04 05:58:41', ' ', '2020-03-13 12:57:25');
+    INSERT INTO `sys_menu` VALUES (2301, '令牌删除', 'sys_token_del', NULL, 2300, NULL, 0, '0', '1', '0', ' ', '2018-09-04 05:59:50', ' ', '2020-03-13 12:57:34');
+    INSERT INTO `sys_menu` VALUES (2400, '终端管理', '', '/admin/client/index', 2000, 'icon-shouji', 0, '0', '0', '0', ' ', '2018-01-20 13:17:19', ' ', '2020-03-12 00:15:54');
+    INSERT INTO `sys_menu` VALUES (2401, '客户端新增', 'sys_client_add', NULL, 2400, '1', 0, '0', '1', '0', ' ', '2018-05-15 21:35:18', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2402, '客户端修改', 'sys_client_edit', NULL, 2400, NULL, 0, '0', '1', '0', ' ', '2018-05-15 21:37:06', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2403, '客户端删除', 'sys_client_del', NULL, 2400, NULL, 0, '0', '1', '0', ' ', '2018-05-15 21:39:16', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2500, '服务监控', NULL, 'http://localhost:5001', 2000, 'icon-server', 0, '0', '0', '0', ' ', '2018-06-26 10:50:32', ' ', '2019-02-01 20:41:30');
+    INSERT INTO `sys_menu` VALUES (2600, '文件管理', NULL, '/admin/file/index', 2000, 'icon-wenjianguanli', 0, '0', '0', '0', ' ', '2018-06-26 10:50:32', ' ', '2019-02-01 20:41:30');
+    INSERT INTO `sys_menu` VALUES (2601, '文件删除', 'sys_file_del', NULL, 2600, NULL, 0, '0', '1', '0', ' ', '2017-11-29 11:30:11', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2602, '文件新增', 'sys_file_add', NULL, 2600, NULL, 0, '0', '1', '0', ' ', '2018-05-11 22:34:55', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (2603, '文件修改', 'sys_file_edit', NULL, 2600, NULL, 0, '0', '1', '0', ' ', '2018-05-11 22:36:03', ' ', '2021-05-25 06:48:34');
+    INSERT INTO `sys_menu` VALUES (3000, '开发平台', NULL, '/gen', -1, 'icon-shejiyukaifa-', 3, '1', '0', '0', ' ', '2020-03-11 22:15:40', ' ', '2020-03-11 23:52:54');
+    INSERT INTO `sys_menu` VALUES (3100, '数据源管理', NULL, '/gen/datasource', 3000, 'icon-mysql', 0, '1', '0', '0', ' ', '2020-03-11 22:17:05', ' ', '2020-03-12 00:16:09');
+    INSERT INTO `sys_menu` VALUES (3200, '代码生成', NULL, '/gen/index', 3000, 'icon-weibiaoti46', 0, '0', '0', '0', ' ', '2020-03-11 22:23:42', ' ', '2020-03-12 00:16:14');
+    INSERT INTO `sys_menu` VALUES (3300, '表单管理', NULL, '/gen/form', 3000, 'icon-record', 0, '1', '0', '0', ' ', '2020-03-11 22:19:32', ' ', '2020-03-12 00:16:18');
+    INSERT INTO `sys_menu` VALUES (3301, '表单新增', 'gen_form_add', NULL, 3300, '', 0, '0', '1', '0', ' ', '2018-05-15 21:35:18', ' ', '2020-03-11 22:39:08');
+    INSERT INTO `sys_menu` VALUES (3302, '表单修改', 'gen_form_edit', NULL, 3300, '', 0, '0', '1', '0', ' ', '2018-05-15 21:35:18', ' ', '2020-03-11 22:39:09');
+    INSERT INTO `sys_menu` VALUES (3303, '表单删除', 'gen_form_del', NULL, 3300, '', 0, '0', '1', '0', ' ', '2018-05-15 21:35:18', ' ', '2020-03-11 22:39:11');
+    INSERT INTO `sys_menu` VALUES (3400, '表单设计', NULL, '/gen/design', 3000, 'icon-biaodanbiaoqian', 0, '1', '0', '0', ' ', '2020-03-11 22:18:05', ' ', '2020-03-12 00:16:25');
+    INSERT INTO `sys_menu` VALUES (9999, '系统官网', NULL, 'https://pig4cloud.com/#/', -1, 'icon-guanwangfangwen', 999, '0', '0', '0', ' ', '2019-01-17 17:05:19', 'admin', '2020-03-11 23:52:57');
+    INSERT INTO `sys_menu` VALUES (1644822612033, 'demo 表管理', '', '/demo/demo/index', -1, 'icon-bangzhushouji', 8, '0', '0', '0', NULL, '2018-01-20 13:17:19', NULL, '2018-07-29 13:38:19');
+    INSERT INTO `sys_menu` VALUES (1644822612034, 'demo 表查看', 'demo_demo_get', '', 1644822612033, '1', 0, '0', '1', '0', NULL, '2018-05-15 21:35:18', NULL, '2018-07-29 13:38:59');
+    INSERT INTO `sys_menu` VALUES (1644822612035, 'demo 表新增', 'demo_demo_add', NULL, 1644822612033, '1', 1, '0', '1', '0', NULL, '2018-05-15 21:35:18', NULL, '2018-07-29 13:38:59');
+    INSERT INTO `sys_menu` VALUES (1644822612036, 'demo 表修改', 'demo_demo_edit', NULL, 1644822612033, '1', 2, '0', '1', '0', NULL, '2018-05-15 21:35:18', NULL, '2018-07-29 13:38:59');
+    INSERT INTO `sys_menu` VALUES (1644822612037, 'demo 表删除', 'demo_demo_del', NULL, 1644822612033, '1', 3, '0', '1', '0', NULL, '2018-05-15 21:35:18', NULL, '2018-07-29 13:38:59');
+
+    -- ----------------------------
+    -- Table structure for sys_role
+    -- ----------------------------
+    DROP TABLE IF EXISTS `sys_role`;
+    CREATE TABLE `sys_role`  (
+    `role_id` bigint(20) NOT NULL,
+    `role_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+    `role_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+    `role_desc` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
+    `del_flag` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '0' COMMENT '删除标识（0-正常,1-删除）',
+    `create_time` datetime(0) NULL DEFAULT NULL COMMENT '创建时间',
+    `update_time` datetime(0) NULL DEFAULT NULL COMMENT '修改时间',
+    `update_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '修改人',
+    `create_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '创建人',
+    PRIMARY KEY (`role_id`) USING BTREE,
+    UNIQUE INDEX `role_idx1_role_code`(`role_code`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '系统角色表' ROW_FORMAT = Dynamic;
+
+    -- ----------------------------
+    -- Records of sys_role
+    -- ----------------------------
+    INSERT INTO `sys_role` VALUES (1, '管理员', 'ROLE_ADMIN', '管理员', '0', '2017-10-29 15:45:51', '2018-12-26 14:09:11', NULL, NULL);
+
+    -- ----------------------------
+    -- Table structure for sys_role_menu
+    -- ----------------------------
+    DROP TABLE IF EXISTS `sys_role_menu`;
+    CREATE TABLE `sys_role_menu`  (
+    `role_id` bigint(20) NOT NULL,
+    `menu_id` bigint(20) NOT NULL,
+    PRIMARY KEY (`role_id`, `menu_id`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '角色菜单表' ROW_FORMAT = Dynamic;
+
+    -- ----------------------------
+    -- Records of sys_role_menu
+    -- ----------------------------
+    INSERT INTO `sys_role_menu` VALUES (1, 1000);
+    INSERT INTO `sys_role_menu` VALUES (1, 1100);
+    INSERT INTO `sys_role_menu` VALUES (1, 1101);
+    INSERT INTO `sys_role_menu` VALUES (1, 1102);
+    INSERT INTO `sys_role_menu` VALUES (1, 1103);
+    INSERT INTO `sys_role_menu` VALUES (1, 1104);
+    INSERT INTO `sys_role_menu` VALUES (1, 1200);
+    INSERT INTO `sys_role_menu` VALUES (1, 1201);
+    INSERT INTO `sys_role_menu` VALUES (1, 1202);
+    INSERT INTO `sys_role_menu` VALUES (1, 1203);
+    INSERT INTO `sys_role_menu` VALUES (1, 1300);
+    INSERT INTO `sys_role_menu` VALUES (1, 1301);
+    INSERT INTO `sys_role_menu` VALUES (1, 1302);
+    INSERT INTO `sys_role_menu` VALUES (1, 1303);
+    INSERT INTO `sys_role_menu` VALUES (1, 1304);
+    INSERT INTO `sys_role_menu` VALUES (1, 1400);
+    INSERT INTO `sys_role_menu` VALUES (1, 1401);
+    INSERT INTO `sys_role_menu` VALUES (1, 1402);
+    INSERT INTO `sys_role_menu` VALUES (1, 1403);
+    INSERT INTO `sys_role_menu` VALUES (1, 2000);
+    INSERT INTO `sys_role_menu` VALUES (1, 2100);
+    INSERT INTO `sys_role_menu` VALUES (1, 2101);
+    INSERT INTO `sys_role_menu` VALUES (1, 2102);
+    INSERT INTO `sys_role_menu` VALUES (1, 2200);
+    INSERT INTO `sys_role_menu` VALUES (1, 2201);
+    INSERT INTO `sys_role_menu` VALUES (1, 2202);
+    INSERT INTO `sys_role_menu` VALUES (1, 2203);
+    INSERT INTO `sys_role_menu` VALUES (1, 2300);
+    INSERT INTO `sys_role_menu` VALUES (1, 2301);
+    INSERT INTO `sys_role_menu` VALUES (1, 2400);
+    INSERT INTO `sys_role_menu` VALUES (1, 2401);
+    INSERT INTO `sys_role_menu` VALUES (1, 2402);
+    INSERT INTO `sys_role_menu` VALUES (1, 2403);
+    INSERT INTO `sys_role_menu` VALUES (1, 2600);
+    INSERT INTO `sys_role_menu` VALUES (1, 2601);
+    INSERT INTO `sys_role_menu` VALUES (1, 2602);
+    INSERT INTO `sys_role_menu` VALUES (1, 2603);
+    INSERT INTO `sys_role_menu` VALUES (1, 3000);
+    INSERT INTO `sys_role_menu` VALUES (1, 3100);
+    INSERT INTO `sys_role_menu` VALUES (1, 3200);
+    INSERT INTO `sys_role_menu` VALUES (1, 3300);
+    INSERT INTO `sys_role_menu` VALUES (1, 3301);
+    INSERT INTO `sys_role_menu` VALUES (1, 3302);
+    INSERT INTO `sys_role_menu` VALUES (1, 3303);
+    INSERT INTO `sys_role_menu` VALUES (1, 3400);
+    INSERT INTO `sys_role_menu` VALUES (1, 9999);
+    INSERT INTO `sys_role_menu` VALUES (1, 1644822612033);
+    INSERT INTO `sys_role_menu` VALUES (1, 1644822612034);
+    INSERT INTO `sys_role_menu` VALUES (1, 1644822612035);
+    INSERT INTO `sys_role_menu` VALUES (1, 1644822612036);
+    INSERT INTO `sys_role_menu` VALUES (1, 1644822612037);
+
+    -- ----------------------------
+    -- Table structure for sys_user
+    -- ----------------------------
+    DROP TABLE IF EXISTS `sys_user`;
+    CREATE TABLE `sys_user`  (
+    `user_id` bigint(20) NOT NULL,
+    `username` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户名',
+    `password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '密码',
+    `salt` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '随机盐',
+    `phone` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '简介',
+    `avatar` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '头像',
+    `dept_id` bigint(20) NULL DEFAULT NULL COMMENT '部门ID',
+    `lock_flag` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '0' COMMENT '0-正常，9-锁定',
+    `del_flag` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT '0' COMMENT '0-正常，1-删除',
+    `create_time` datetime(0) NULL DEFAULT NULL COMMENT '创建时间',
+    `update_time` datetime(0) NULL DEFAULT NULL COMMENT '修改时间',
+    `create_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '创建者',
+    `update_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '更新人',
+    PRIMARY KEY (`user_id`) USING BTREE,
+    INDEX `user_idx1_username`(`username`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '用户表' ROW_FORMAT = Dynamic;
+
+    -- ----------------------------
+    -- Records of sys_user
+    -- ----------------------------
+    INSERT INTO `sys_user` VALUES (1, 'admin', '$2a$10$RpFJjxYiXdEsAGnWp/8fsOetMuOON96Ntk/Ym2M/RKRyU0GZseaDC', NULL, '17034642999', '', 1, '0', '0', '2018-04-20 07:15:18', '2019-01-31 14:29:07', NULL, NULL);
+
+    -- ----------------------------
+    -- Table structure for sys_user_role
+    -- ----------------------------
+    DROP TABLE IF EXISTS `sys_user_role`;
+    CREATE TABLE `sys_user_role`  (
+    `user_id` bigint(20) NOT NULL,
+    `role_id` bigint(20) NOT NULL,
+    PRIMARY KEY (`user_id`, `role_id`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '用户角色表' ROW_FORMAT = Dynamic;
+
+    -- ----------------------------
+    -- Records of sys_user_role
+    -- ----------------------------
+    INSERT INTO `sys_user_role` VALUES (1, 1);
+
+    SET FOREIGN_KEY_CHECKS = 1;
+
+    ~~~
+* 我们需要先定义一个过滤器，来匹配路径所需要的角色信息
+    ~~~java
+    @Component
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    public class MySecurityMetadataSource implements FilterInvocationSecurityMetadataSource {
+
+        private final UserClient userClient;
+        private final AntPathMatcher antPathMatcher = new AntPathMatcher();
+
+        @Override
+        public Collection<ConfigAttribute> getAttributes(Object o) throws IllegalArgumentException {
+            //客户端请求的Url
+            String requestUrl = ((FilterInvocation) o).getRequestUrl();
+            //获取所有的资源路径，也就是表Permissions中的路径，将url和该路径匹配，来确定该路径需要XXX角色/XXX权限
+            List<Permissions> permissions = userClient.queryAllPermissions();
+            for (Permissions permission : permissions) {
+                //如果路径匹配
+                if (antPathMatcher.match(permission.getResource(), requestUrl)) {
+                    //查询该路径所需要的角色信息
+                    List<SysRole> rolePermissions = userClient.queryRoleByResource(permission.getResource());
+                    //获取的是角色对象，验证的时候其实只需要角色编码
+                    String[] roleNames = rolePermissions.stream().map(SysRole::getRoleCode).toArray(String[]::new);
+                    //将该路径所需要的角色编码存储起来，SecurityConfig这个类是org.springframework.security.access包下的
+                    return SecurityConfig.createList(roleNames);
+                }
+            }
+            //这一段表示如果没有权限验证，也需要进行登录验证，很关键
+            return SecurityConfig.createList("ROLE_USER");
+        }
+
+        @Override
+        public Collection<ConfigAttribute> getAllConfigAttributes() {
+            return null;
+        }
+
+        /**
+        * 这个方法要先返回true
+        *
+        */
+        @Override
+        public boolean supports(Class<?> aClass) {
+            return true;
+        }
+    }
+    ~~~
+* 然后再进行自定义的权限判定
+    ~~~java
+    @Component
+    public class RoleAccessDecisionManager implements AccessDecisionManager {
+        @Override
+        public void decide(Authentication authentication, Object o, Collection<ConfigAttribute> collection) throws AccessDeniedException, InsufficientAuthenticationException {
+            //获取用户所拥有的权限，该权限在登录的时候已经被放入了
+            Collection<? extends GrantedAuthority> authorities = authentication.getAuthorities();
+            //接下来就是判定是否存在，如果存在，则return放行
+            for (GrantedAuthority authority : authorities) {
+                for (ConfigAttribute c : collection) {
+                    if(c.getAttribute().equals(authority.getAuthority())){
+                        return;
+                    }
+                }
+            }
+            //权限不通过则抛出异常
+            throw new AccessDeniedException("当前访问没有权限");
+        }
+
+        /**
+        * 返回值更改为true
+        *
+        */
+        @Override
+        public boolean supports(ConfigAttribute configAttribute) {
+            return true;
+        }
+
+        /**
+        * 返回值更改为true
+        *
+        */
+        @Override
+        public boolean supports(Class<?> aClass) {
+            return true;
+        }
+    }
+    ~~~
+* 完成之后我们需要在Security的配置中配置这两个类
+    ~~~java
+    @Configuration
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    @EnableWebSecurity
+    public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+        private final RoleAccessDecisionManager roleAccessDecisionManager;
+        private final MySecurityMetadataSource mySecurityMetadataSource;
+
+        @Bean
+        public PasswordEncoder getPw() {
+            return new BCryptPasswordEncoder();
+        }
+
+
+        @Override
+        protected void configure(HttpSecurity http) throws Exception {
+            http.csrf().disable().authorizeRequests()
+                    .antMatchers("/login/**", "/logout/**").permitAll()
+                    .anyRequest().authenticated()
+                    //※※※※※※※※※      配置自定义的权限逻辑       ※※※※※※※※※※※※
+                    .withObjectPostProcessor(new ObjectPostProcessor<FilterSecurityInterceptor>() {
+                        @Override
+                        public <O extends FilterSecurityInterceptor> O postProcess(O o) {
+                            o.setAccessDecisionManager(roleAccessDecisionManager);
+                            o.setSecurityMetadataSource(mySecurityMetadataSource);
+                            return o;
+                        }
+                    })
+                    .and()
+                    .formLogin().permitAll()
+                    .successForwardUrl("/toIndex");
+        }
+    }
+
+    ~~~
+* 当然如果想要验证的话，不要忘记自定义的认证逻辑里面的代码，认证完成后需要将权限信息放入，此处是写死的ROLE_ADMIN
+    ~~~java
+    @Service
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    public class UserDetailsServiceImpl implements UserDetailsService {
+
+
+        private final UserClient userClient;
+
+        @Override
+        public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+            R<UserInfo> info = userClient.info(username);
+            //跳开具体的验证逻辑，简写了
+            UserInfo userInfo = info.getData();
+
+            return new User(userInfo.getSysUser().getUsername(), userInfo.getSysUser().getPassword(), AuthorityUtils.commaSeparatedStringToAuthorityList("ROLE_ADMIN"));
+        }
+    }
+    ~~~
