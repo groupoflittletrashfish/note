@@ -2048,7 +2048,7 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
 * 输入完成后由于开启了自动授权，页面会立马跳回到刚才访问的地址：http://localhost:8083/user/getCurrentUser，并展示数据
 
 
-### 动态权限控制
+## 动态权限控制
 * 实际开发中，基本上都是将权限配置在数据库中，很少会写死
 * 如下是一份简单的5表权限控制，<hl>sys_menu这个表暂时可以先不看，由于只是演示，这个表的设计有很大问题。正常来讲，角色对应权限，权限对应资源，这个sql中相当于跳开了角色和权限的关联，直接在Permissions表中填写了资源路径，所以只是demo</hl>
     ~~~sql
@@ -2439,3 +2439,341 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
         }
     }
     ~~~
+## Security深入理解
+### Security自带的过滤器
+* 过滤器很重要，需要先查看下有哪些过滤器
+* > https://blog.csdn.net/a807719447/article/details/108732660
+
+
+## Security + JWT做token认证和授权（前后端分离）
+### 直接上代码
+* 编写一个jwt的工具类
+    ~~~java
+    @Data
+    @ConfigurationProperties(prefix = "jwt")
+    @Component
+    public class JwtTokenUtil {
+
+        private String secret;
+
+        // 过期时间 毫秒
+        private Long expiration;
+
+        private String header;
+
+        /**
+        * 从数据声明生成令牌
+        *
+        * @param claims 数据声明
+        * @return 令牌
+        */
+        private String generateToken(Map<String, Object> claims) {
+            Date expirationDate = new Date(System.currentTimeMillis() + expiration);
+            return Jwts.builder().setClaims(claims).setExpiration(expirationDate).signWith(SignatureAlgorithm.HS512, secret).compact();
+        }
+
+        /**
+        * 从令牌中获取数据声明
+        *
+        * @param token 令牌
+        * @return 数据声明
+        */
+        private Claims getClaimsFromToken(String token) {
+            Claims claims;
+            try {
+                claims = Jwts.parser().setSigningKey(secret).parseClaimsJws(token).getBody();
+            } catch (Exception e) {
+                claims = null;
+            }
+            return claims;
+        }
+
+        /**
+        * 生成令牌
+        *
+        * @param userDetails 用户
+        * @return 令牌
+        */
+        public String generateToken(UserDetails userDetails) {
+            Map<String, Object> claims = new HashMap<>(2);
+            claims.put(Claims.SUBJECT, userDetails.getUsername());
+            claims.put(Claims.ISSUED_AT, new Date());
+            return generateToken(claims);
+        }
+
+        /**
+        * 从令牌中获取用户名
+        *
+        * @param token 令牌
+        * @return 用户名
+        */
+        public String getUsernameFromToken(String token) {
+            String username;
+            try {
+                Claims claims = getClaimsFromToken(token);
+                username = claims.getSubject();
+            } catch (Exception e) {
+                username = null;
+            }
+            return username;
+        }
+
+        /**
+        * 判断令牌是否过期
+        *
+        * @param token 令牌
+        * @return 是否过期
+        */
+        public Boolean isTokenExpired(String token) {
+            try {
+                Claims claims = getClaimsFromToken(token);
+                Date expiration = claims.getExpiration();
+                return expiration.before(new Date());
+            } catch (Exception e) {
+                return true;
+            }
+        }
+
+        /**
+        * 刷新令牌
+        *
+        * @param token 原令牌
+        * @return 新令牌
+        */
+        public String refreshToken(String token) {
+            String refreshedToken;
+            try {
+                Claims claims = getClaimsFromToken(token);
+                claims.put(Claims.ISSUED_AT, new Date());
+                refreshedToken = generateToken(claims);
+            } catch (Exception e) {
+                refreshedToken = null;
+            }
+            return refreshedToken;
+        }
+
+        /**
+        * 验证令牌
+        *
+        * @param token       令牌
+        * @param userDetails 用户
+        * @return 是否有效
+        */
+        public Boolean validateToken(String token, UserDetails userDetails) {
+            JwtUser user = (JwtUser) userDetails;
+            String username = getUsernameFromToken(token);
+            return (username.equals(user.getUsername()) && !isTokenExpired(token));
+        }
+    }
+    ~~~
+* 由于工具类里面用了@ConfigurationProperties(prefix = "jwt")，所以在配置文件中需要一些配置一些参数
+    ~~~yaml
+    jwt:
+        # 长度必须大于4，这边是随便写的
+        secret: 4444
+        # jwt的失效时间
+        expiration: 600000
+        # 头部key的名称
+        header: Authorization
+    ~~
+* 编写一个核心的 jwt验证类
+    ~~~java
+    @Component
+    @RequiredArgsConstructor
+    public class JwtAuthenticationTokenFilter extends OncePerRequestFilter {
+        private final UserDetailsService userDetailsService;
+        private final JwtTokenUtil jwtTokenUtil;
+
+        @Override
+        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws ServletException, IOException {
+            //从头部获取token
+            String token = request.getHeader(jwtTokenUtil.getHeader());
+            if (!StringUtils.isEmpty(token)) {
+                //解析token来获取用户名
+                String username = jwtTokenUtil.getUsernameFromToken(token);
+                //SecurityContextHolder.getContext()是表示Security，他内部是一个ThreadLocal
+                if (username != null && SecurityContextHolder.getContext().getAuthentication() == null){
+                    //执行自定义的登录逻辑，userDetailsService是注入进来的
+                    UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+                    //这一段就是验证token中的用户和登录用户是否相同
+                    if (jwtTokenUtil.validateToken(token, userDetails)){
+                        // 将用户信息存入 authentication，方便后续校验
+                        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+                        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                        // 将 authentication 存入 ThreadLocal，方便后续获取用户信息
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                    }
+                }
+            }
+            chain.doFilter(request, response);
+        }
+    }
+    ~~~
+* 自定义的登录逻辑代码还是贴出来一下,所拥有的权限直接写死了
+    ~~~java
+    @Service
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    public class UserDetailsServiceImpl implements UserDetailsService {
+
+
+        private final UserClient userClient;
+
+        @Override
+        public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+            R<UserInfo> info = userClient.info(username);
+            //跳开具体的验证逻辑，简写了
+            UserInfo userInfo = info.getData();
+
+            return new User(userInfo.getSysUser().getUsername(), userInfo.getSysUser().getPassword(), AuthorityUtils.commaSeparatedStringToAuthorityList("ROLE_ADMIN"));
+        }
+    }
+    ~~~
+* 接下来就是登录成功后将token写入返回的逻辑
+    ~~~java
+    @RequiredArgsConstructor
+    @Component
+    public class MyAuthenticationSuccessHandler implements AuthenticationSuccessHandler {
+
+        private final JwtTokenUtil jwtTokenUtil;
+
+        @Override
+        public void onAuthenticationSuccess(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, Authentication authentication) throws IOException, ServletException {
+            //获取登录的用户信息
+            UserDetails userDetails = (UserDetails) authentication.getPrincipal();
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+            //生成token
+            String token = jwtTokenUtil.generateToken(userDetails);
+            //登录成功后直接将token以json字符串的形式返回给前端了
+            renderToken(httpServletResponse, token);
+        }
+
+
+        /**
+        * 渲染返回 token 页面,因为前端页面接收的都是Result对象，故使用application/json返回
+        *
+        * @param response
+        * @throws IOException
+        */
+        public void renderToken(HttpServletResponse response, String token) throws IOException {
+            response.setContentType("application/json;charset=UTF-8");
+            ServletOutputStream out = response.getOutputStream();
+            String str = JSONObject.toJSONString(R.ok(token));
+            out.write(str.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.close();
+        }
+    }
+    ~~~
+* 相应的编写一个 认证失败 的自定义处理
+    ~~~java
+    @Component
+    public class MyAuthenticationFailureHandler implements AuthenticationFailureHandler {
+        @Override
+        public void onAuthenticationFailure(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, AuthenticationException e) throws IOException, ServletException {
+            httpServletResponse.setContentType("application/json;charset=UTF-8");
+            ServletOutputStream out = httpServletResponse.getOutputStream();
+            String str = JSONObject.toJSONString(R.error(401, "登录失败"));
+            out.write(str.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.close();
+        }
+    }
+    ~~~
+* 然后是编写一个 身份认证失败 的自定义处理，如果token不对将执行此段代码
+    ~~~java
+    @Component
+    public class EntryPointUnauthorizedHandler implements AuthenticationEntryPoint {
+        @Override
+        public void commence(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, AuthenticationException e) throws IOException, ServletException {
+            httpServletResponse.setContentType("application/json;charset=UTF-8");
+            ServletOutputStream out = httpServletResponse.getOutputStream();
+            String str = JSONObject.toJSONString(R.error(401,"身份验证失败"));
+            out.write(str.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.close();
+        }
+    }
+    ~~~
+* 编写一个 授权失败 的自定义处理
+    ~~~java
+    @Component
+    public class RestAccessDeniedHandler implements AccessDeniedHandler {
+        @Override
+        public void handle(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, AccessDeniedException e) throws IOException, ServletException {
+            httpServletResponse.setContentType("application/json;charset=UTF-8");
+            ServletOutputStream out = httpServletResponse.getOutputStream();
+            String str = JSONObject.toJSONString(R.error(403, "权限不足"));
+            out.write(str.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.close();
+        }
+    }
+    ~~~
+* 然后就是Security的核心配置
+    ~~~java
+    @Configuration
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    @EnableWebSecurity
+    public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+        private final MyAuthenticationSuccessHandler myAuthenticationSuccessHandler;
+        private final UserDetailsService userDetailsService;
+        private final JwtAuthenticationTokenFilter jwtAuthenticationTokenFilter;
+        private final EntryPointUnauthorizedHandler entryPointUnauthorizedHandler;
+        private final RestAccessDeniedHandler restAccessDeniedHandler;
+        private final MyAuthenticationFailureHandler myAuthenticationFailureHandler;
+
+        @Bean
+        public PasswordEncoder getPw() {
+            return new BCryptPasswordEncoder();
+        }
+
+
+        @Override
+        protected void configure(HttpSecurity http) throws Exception {
+            http.csrf().disable().authorizeRequests()
+                    //允许所有的跨域请求
+                    .requestMatchers(CorsUtils::isPreFlightRequest).permitAll()
+                    .antMatchers("/toNoPermission", "/toLogin", "/login/**", "/logout/**", "/login.html").permitAll()
+                    .anyRequest().authenticated()
+                    .and()
+                    .formLogin().permitAll()
+                    //自定义的认证成功处理
+                    .successHandler(myAuthenticationSuccessHandler)
+                    //自定义的认证失败处理
+                    .failureHandler(myAuthenticationFailureHandler)
+                    .loginPage("/toLogin")
+                    .loginProcessingUrl("/login")
+                    .and()
+                    //禁用Session，非常非常关键，如果少了这一段，即在客户端第一次登录完成后后续即使没有token也能继续访问，因为它的sessionId被记录了下来
+                    .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                    .and()
+                    //在UsernamePasswordAuthenticationFilter拦截器前面添加一个自定义的token拦截器
+                    .addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class)
+                    .exceptionHandling()
+                    //自定义的身份验证失败处理
+                    .authenticationEntryPoint(entryPointUnauthorizedHandler)
+                    //自定义的权限失败处理
+                    .accessDeniedHandler(restAccessDeniedHandler)
+                    .and()
+                    .headers().cacheControl();
+        }
+
+
+        @Bean
+        public CorsFilter corsFilter(){
+            UrlBasedCorsConfigurationSource configurationSource = new UrlBasedCorsConfigurationSource();
+            CorsConfiguration cors = new CorsConfiguration();
+            cors.setAllowCredentials(true);
+            cors.addAllowedOrigin("*");
+            cors.addAllowedHeader("*");
+            cors.addAllowedMethod("*");
+            configurationSource.registerCorsConfiguration("/**", cors);
+            return new CorsFilter(configurationSource);
+        }
+
+    }
+    ~~~
+* 最后要在启动类上添加注解 ：@EnableGlobalMethodSecurity，将所有的注解功能开启
+* 参看这一片文章 > https://www.jianshu.com/p/5b9f1f4de88d
+* 最后进行验证，首先调用登录，成功后返回token,再调用任意需要权限的接口，将自定义的头部，此处是Authorization：token传递就可以访问了
