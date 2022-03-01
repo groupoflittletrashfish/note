@@ -2777,3 +2777,223 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
 * 最后要在启动类上添加注解 ：@EnableGlobalMethodSecurity，将所有的注解功能开启
 * 参看这一片文章 > https://www.jianshu.com/p/5b9f1f4de88d
 * 最后进行验证，首先调用登录，成功后返回token,再调用任意需要权限的接口，将自定义的头部，此处是Authorization：token传递就可以访问了
+
+## <hl>单点登录（必看）</hl>
+* 以下是个人理解，也是踩过的坑
+* 目前的主流肯定是前后端分离，所以登陆完成以后一定是会返回一个token。这一块内容就是上面  Security + JWT做token认证和授权（前后端分离）   所描述的，即通过自定义的token去鉴权,所以网上查的资料很多都是通过postman去访问/oauth/token去获取的，这种方式应该是没有加入自定义的token鉴权下是可用的。按之前的代码，加入了JwtAuthenticationTokenFilter这个类，实测下来应该是会替代它默认的token验证方法。也就是说，不再需要通过访问/oauth/token去获取，之前的代码中在登录完成以后直接会输出一个token,只要使用该token去访问其他服务即可。如果分布式环境，不确定JWT自己控制的token在分布式环境下是否会有问题，大概说一下目前能理解的流程
+  * 前端访问A服务
+  * 由于没有登录，后端跳转到统一登录页面
+  * 客户输入账密，不通过则报错/继续跳转当页面并现实错误，都可以。如果认证通过则返回一串自定义的token,也就是上面前后端分离的代码
+  * 前端再次发起请求，访问A服务，此时将token写入到header头中即可访问
+* 具体的代码，看下面的实际案例
+* 另外，基于Session会话完成的单点登录，也就是   Security + Oauth2 + JWT 实现SSO（单点登录）  这一章 ，无法确定在分布式场景下是否能使用，虽然配置起来非常简单，基本按照上面配置的就可以了（当然可以使用jdbc加载的形式），然后可以启动N个客户端，单点登录很方便也很简单
+
+
+## 单点登录-实际案例
+### 概述
+* 在实际的场景中，不可能将客户的服务信息写死，Security也支持从数据库中读取
+### 重点代码
+* <hl></hl>
+* 首先，肯定是需要一个授权服务
+    ~~~java
+    @Configuration
+    @EnableAuthorizationServer
+    @RequiredArgsConstructor
+    public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdapter {
+
+        private final DataSource dataSource;
+        private final UserDetailsService userService;
+        private final AuthenticationManager authenticationManager;
+        private final TokenStore tokenStore;
+        private final JwtAccessTokenConverter jwtAccessTokenConverter;
+
+        @Override
+        public void configure(ClientDetailsServiceConfigurer clients) throws Exception {
+            clients.withClientDetails(clientDetails());
+        }
+
+        /**
+        * 密码模式必须
+        *
+        */
+        @Override
+        public void configure(AuthorizationServerSecurityConfigurer security) throws Exception {
+            security.tokenKeyAccess("isAuthenticated()");
+        }
+
+
+
+        @Bean
+        public ClientDetailsService clientDetails() {
+            //这一段是关键，Security提供了对JDBC的支持
+            return new JdbcClientDetailsService(dataSource);
+        }
+
+        @Override
+        public void configure(AuthorizationServerEndpointsConfigurer endpoints) throws Exception {
+            endpoints.authenticationManager(authenticationManager)
+                    //指定自定义的登录逻辑
+                    .userDetailsService(userService)
+                    //指定使用jwt
+                    .tokenStore(tokenStore)
+                    //jwt的转换
+                    .accessTokenConverter(jwtAccessTokenConverter);
+        }
+    }
+    ~~~
+* 官方提供了相应的表结构
+    ~~~sql
+    DROP TABLE IF EXISTS `oauth_client_details`;
+    CREATE TABLE `oauth_client_details` (
+    `client_id` varchar(48) NOT NULL,
+    `resource_ids` varchar(256) DEFAULT NULL,
+    `client_secret` varchar(256) DEFAULT NULL,
+    `scope` varchar(256) DEFAULT NULL,
+    `authorized_grant_types` varchar(256) DEFAULT NULL,
+    `web_server_redirect_uri` varchar(256) DEFAULT NULL,
+    `authorities` varchar(256) DEFAULT NULL,
+    `access_token_validity` int(11) DEFAULT NULL,
+    `refresh_token_validity` int(11) DEFAULT NULL,
+    `additional_information` varchar(4096) DEFAULT NULL,
+    `autoapprove` varchar(256) DEFAULT NULL,
+    PRIMARY KEY (`client_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    ~~~
+* 自己插入两条数据
+    ~~~sql
+    INSERT INTO `yz_demo`.`oauth_client_details`(`client_id`, `resource_ids`, `client_secret`, `scope`, `authorized_grant_types`, `web_server_redirect_uri`, `authorities`, `access_token_validity`, `refresh_token_validity`, `additional_information`, `autoapprove`) VALUES ('noname', NULL, '$2a$10$RpFJjxYiXdEsAGnWp/8fsOetMuOON96Ntk/Ym2M/RKRyU0GZseaDC', 'all', 'authorization_code', 'http://localhost:8083/login', 'ROLE_ADMIN', 3600, NULL, NULL, 'true');
+    INSERT INTO `yz_demo`.`oauth_client_details`(`client_id`, `resource_ids`, `client_secret`, `scope`, `authorized_grant_types`, `web_server_redirect_uri`, `authorities`, `access_token_validity`, `refresh_token_validity`, `additional_information`, `autoapprove`) VALUES ('binbin', NULL, '$2a$10$RpFJjxYiXdEsAGnWp/8fsOetMuOON96Ntk/Ym2M/RKRyU0GZseaDC', 'all', 'password', 'http://localhost:8083/login', 'ROLE_ADMIN', 3600, NULL, NULL, 'true');
+    ~~~
+* <hl>此处有坑，client_secret是通过BCryptPasswordEncoder加密的结果，如果填写明文的话后台会报错。此处这一串乱码的明文是123456</hl>
+* Security的配置还是使用的前后端分离的一套
+    ~~~java
+    @Configuration
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    @EnableWebSecurity
+    public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+        private final MyAuthenticationSuccessHandler myAuthenticationSuccessHandler;
+        private final UserDetailsService userDetailsService;
+        private final JwtAuthenticationTokenFilter jwtAuthenticationTokenFilter;
+        private final EntryPointUnauthorizedHandler entryPointUnauthorizedHandler;
+        private final RestAccessDeniedHandler restAccessDeniedHandler;
+        private final MyAuthenticationFailureHandler myAuthenticationFailureHandler;
+
+        @Bean
+        public PasswordEncoder getPw() {
+            return new BCryptPasswordEncoder();
+        }
+
+
+        @Override
+        protected void configure(HttpSecurity http) throws Exception {
+            http.csrf().disable().authorizeRequests()
+                    //允许所有的跨域请求
+                    .requestMatchers(CorsUtils::isPreFlightRequest).permitAll()
+                    .antMatchers("/toNoPermission", "/toLogin", "/login/**", "/logout/**", "/login.html","/oauth/**").permitAll()
+                    .anyRequest().authenticated()
+                    .and()
+                    .formLogin().permitAll()
+                    //自定义的认证成功处理
+                    .successHandler(myAuthenticationSuccessHandler)
+                    //自定义的认证失败处理
+                    .failureHandler(myAuthenticationFailureHandler)
+                    .loginPage("/toLogin")
+                    .loginProcessingUrl("/login")
+                    .and()
+                    //禁用Session，非常非常关键，如果少了这一段，即在客户端第一次登录完成后后续即使没有token也能继续访问，因为它的sessionId被记录了下来
+                    .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                    .disable()
+    //                .and()
+                    //在UsernamePasswordAuthenticationFilter拦截器前面添加一个自定义的token拦截器
+                    .addFilterBefore(jwtAuthenticationTokenFilter, UsernamePasswordAuthenticationFilter.class)
+                    .exceptionHandling()
+                    //自定义的身份验证失败处理
+                    .authenticationEntryPoint(entryPointUnauthorizedHandler)
+                    //自定义的权限失败处理
+                    .accessDeniedHandler(restAccessDeniedHandler)
+                    .and()
+                    .headers().cacheControl();
+        }
+
+
+        @Bean
+        public CorsFilter corsFilter(){
+            UrlBasedCorsConfigurationSource configurationSource = new UrlBasedCorsConfigurationSource();
+            CorsConfiguration cors = new CorsConfiguration();
+            cors.setAllowCredentials(true);
+            cors.addAllowedOrigin("*");
+            cors.addAllowedHeader("*");
+            cors.addAllowedMethod("*");
+            configurationSource.registerCorsConfiguration("/**", cors);
+            return new CorsFilter(configurationSource);
+        }
+
+        @Bean
+        @Override
+        public AuthenticationManager authenticationManagerBean() throws Exception {
+            return super.authenticationManagerBean();
+        }
+
+    }
+    ~~~
+* 注意，上面的授权服务器的端口是9000，下面需要配置一个客户端，偷懒用的是 oauth2client01-demo 就改了下配置,此处是client-id和client-secret也就是数据库对应的一条记录，<hl>虽然指定了授权码模式，但一旦分离好像就无关紧要了</hl>
+    ~~~yaml
+    server:
+    port: 8083
+    servlet:
+        session:
+        cookie:
+            #防止cookie冲突，冲突会导致登录验证不通过
+            name: OAUTH2-CLIENT-SESSIONID01
+    # 授权服务器的地址，供下面的配置文件使用
+    oauth2-server-url: http://localhost:9000
+    # 与授权服务器对应的配置
+    security:
+    oauth2:
+        client:
+        client-id: noname
+        client-secret: 123456
+        # 授权URI
+        user-authorization-uri: ${oauth2-server-url}/oauth/authorize
+        # 获取token的URI
+        access-token-uri: ${oauth2-server-url}/oauth/token
+        resource:
+        jwt:
+            # 获取jwt的URI
+            key-uri: ${oauth2-server-url}/oauth/token_key
+    ~~~
+* 客户的访问类，保持原样
+    ~~~java
+    @RestController
+    @RequestMapping("/user")
+    public class UserController {
+
+        /**
+        * 获取用户信息
+        *
+        * @param authentication
+        * @return
+        */
+        @RequestMapping("/getCurrentUser")
+        public Object getCurrentUser(Authentication authentication) {
+            return authentication;
+        }
+
+    }
+    ~~~
+* 启动类上添加@EnableOAuth2Sso注解
+    ~~~java
+    @SpringBootApplication
+    @EnableOAuth2Sso
+    public class Oauth2client01DemoApplication {
+
+        public static void main(String[] args) {
+            SpringApplication.run(Oauth2client01DemoApplication.class, args);
+        }
+
+    }
+    ~~~
+* 验证一下，需要浏览器和postman
+* 首先访问 localhost:8083/user/getCurrentUser，由于没有登录，自然是跳转到登录页面，输入账号密码则返回一个token。这个token是自己实现的，也就上 前后端分离  那一章的代码
+* 用postman再次访问 localhost:8083/user/getCurrentUser,将token放入到Header中，key的名称也是在 前后端分离  那一章指定了的，此处指定的是：Authorization，然后就可以访问。<hl>访问成功以后有个问题就是此时删除的header,postman再次放松也能成功，暂时不知道怎么解决，也不确定后续是否有问题</hl>
