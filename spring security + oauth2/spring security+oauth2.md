@@ -1331,7 +1331,7 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
     }
 }
 ~~~
-* 新建一个资源服务器的配置
+* 新建一个资源服务器的配置(<hl>实际测试下来，有和没有这个类都没区别。百度了一下，ResourceServerConfigurerAdapter和WebSecurityConfigurerAdapter 是存在优先级的，WebSecurityConfigurerAdapter 将会覆盖它</hl>)
     ~~~java
     @Configuration
     @EnableResourceServer
@@ -2997,3 +2997,238 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
 * 验证一下，需要浏览器和postman
 * 首先访问 localhost:8083/user/getCurrentUser，由于没有登录，自然是跳转到登录页面，输入账号密码则返回一个token。这个token是自己实现的，也就上 前后端分离  那一章的代码
 * 用postman再次访问 localhost:8083/user/getCurrentUser,将token放入到Header中，key的名称也是在 前后端分离  那一章指定了的，此处指定的是：Authorization，然后就可以访问。<hl>访问成功以后有个问题就是此时删除的header,postman再次放松也能成功，暂时不知道怎么解决，也不确定后续是否有问题</hl>
+
+
+## APP端登录（手机+验证码形式）
+* > https://blog.csdn.net/yuanlaijike/article/details/86164160
+* 参考上文，修改代码
+* 新建一个SmsCodeAuthenticationToken类
+    ~~~java
+    public class SmsCodeAuthenticationToken extends AbstractAuthenticationToken  {
+        private static final long serialVersionUID = SpringSecurityCoreVersion.SERIAL_VERSION_UID;
+
+        /**
+        * 在 UsernamePasswordAuthenticationToken 中该字段代表登录的用户名，
+        * 在这里就代表登录的手机号码
+        */
+        private final Object principal;
+
+        /**
+        * 构建一个没有鉴权的 SmsCodeAuthenticationToken
+        */
+        public SmsCodeAuthenticationToken(Object principal) {
+            super(null);
+            this.principal = principal;
+            setAuthenticated(false);
+        }
+
+        /**
+        * 构建拥有鉴权的 SmsCodeAuthenticationToken
+        */
+        public SmsCodeAuthenticationToken(Object principal, Collection<? extends GrantedAuthority> authorities) {
+            super(authorities);
+            this.principal = principal;
+            // must use super, as we override
+            super.setAuthenticated(true);
+        }
+
+        @Override
+        public Object getCredentials() {
+            return null;
+        }
+
+        @Override
+        public Object getPrincipal() {
+            return this.principal;
+        }
+
+        @Override
+        public void setAuthenticated(boolean isAuthenticated) throws IllegalArgumentException {
+            if (isAuthenticated) {
+                throw new IllegalArgumentException(
+                        "Cannot set this token to trusted - use constructor which takes a GrantedAuthority list instead");
+            }
+
+            super.setAuthenticated(false);
+        }
+
+        @Override
+        public void eraseCredentials() {
+            super.eraseCredentials();
+        }
+    }
+    ~~~
+* 构建一个SmsCodeAuthenticationFilter
+    ~~~java
+    public class SmsCodeAuthenticationFilter extends AbstractAuthenticationProcessingFilter {
+
+        /**
+        * form表单中手机号码的字段name
+        */
+        public static final String SPRING_SECURITY_FORM_MOBILE_KEY = "mobile";
+
+        private String mobileParameter = SPRING_SECURITY_FORM_MOBILE_KEY;
+        /**
+        * 是否仅 POST 方式
+        */
+        private boolean postOnly = true;
+
+        public SmsCodeAuthenticationFilter() {
+            // 短信登录的请求 post 方式的 /sms/login
+            super(new AntPathRequestMatcher("/sms/login", "POST"));
+        }
+
+        @Override
+        public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException {
+            if (postOnly && !request.getMethod().equals("POST")) {
+                throw new AuthenticationServiceException(
+                        "Authentication method not supported: " + request.getMethod());
+            }
+
+            String mobile = obtainMobile(request);
+
+            if (mobile == null) {
+                mobile = "";
+            }
+
+            mobile = mobile.trim();
+
+            SmsCodeAuthenticationToken authRequest = new SmsCodeAuthenticationToken(mobile);
+
+            // Allow subclasses to set the "details" property
+            setDetails(request, authRequest);
+
+            return this.getAuthenticationManager().authenticate(authRequest);
+        }
+
+        protected String obtainMobile(HttpServletRequest request) {
+            return request.getParameter(mobileParameter);
+        }
+
+        protected void setDetails(HttpServletRequest request, SmsCodeAuthenticationToken authRequest) {
+            authRequest.setDetails(authenticationDetailsSource.buildDetails(request));
+        }
+
+        public String getMobileParameter() {
+            return mobileParameter;
+        }
+
+        public void setMobileParameter(String mobileParameter) {
+            Assert.hasText(mobileParameter, "Mobile parameter must not be empty or null");
+            this.mobileParameter = mobileParameter;
+        }
+
+        public void setPostOnly(boolean postOnly) {
+            this.postOnly = postOnly;
+        }
+
+    }
+    ~~~
+* 构建 SmsCodeAuthenticationProvider
+    ~~~java
+    @Data
+    public class SmsCodeAuthenticationProvider implements AuthenticationProvider {
+        //这个类是自定义的验证类，也就是用来用手机号来确定是哪个用户的
+        private UserDetailsService userDetailsService;
+        //redis类，验证码是放在redis中的，由于这个类是一个普通类，不能直接注入进来，所以使用构造函数的形式传递进来
+        private RedisUtil redisUtil;
+
+        @Override
+        public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+            SmsCodeAuthenticationToken authenticationToken = (SmsCodeAuthenticationToken) authentication;
+            String mobile = (String) authenticationToken.getPrincipal();
+            checkSmsCode(mobile);
+            UserDetails userDetails = userDetailsService.loadUserByUsername(mobile);
+            if (Objects.isNull(userDetails)) {
+                throw new InternalAuthenticationServiceException("用户不存在");
+            }
+            // 此时鉴权成功后，应当重新 new 一个拥有鉴权的 authenticationResult 返回
+            SmsCodeAuthenticationToken authenticationResult = new SmsCodeAuthenticationToken(userDetails, userDetails.getAuthorities());
+            authenticationResult.setDetails(authenticationToken.getDetails());
+            return authenticationResult;
+        }
+
+        /**
+        * 这个就是自定义的验证码检查函数，写的很简单，可以按实际情况修改
+        * @param mobile
+        */
+        private void checkSmsCode(String mobile) {
+            HttpServletRequest request = ((ServletRequestAttributes) Objects.requireNonNull(RequestContextHolder.getRequestAttributes())).getRequest();
+            //前端传入的验证码
+            String inputCode = request.getParameter("smsCode");
+            String checkCode = Optional.ofNullable(redisUtil.get(mobile + Constant.VERIFICATION_CODE_SUFFIX)).map(Object::toString).orElse("");
+            if (StringUtils.isBlank(checkCode) || StringUtils.isBlank(inputCode)) {
+                throw new BadCredentialsException("验证码错误");
+            }
+            if (Integer.parseInt(inputCode) != Integer.parseInt(checkCode)) {
+                throw new BadCredentialsException("验证码错误");
+            }
+        }
+
+        @Override
+        public boolean supports(Class<?> authentication) {
+            // 判断 authentication 是不是 SmsCodeAuthenticationToken 的子类或子接口
+            return SmsCodeAuthenticationToken.class.isAssignableFrom(authentication);
+        }
+    }
+    ~~~
+* 新建一个SmsCodeAuthenticationSecurityConfig，其实和WebSecurityConfig作用是一样的，只是为了解耦
+    ~~~java
+    @Configuration
+    @RequiredArgsConstructor
+    public class SmsCodeAuthenticationSecurityConfig extends SecurityConfigurerAdapter<DefaultSecurityFilterChain, HttpSecurity> {
+
+        private final MyAuthenticationSuccessHandler myAuthenticationSuccessHandler;
+        private final MyAuthenticationFailureHandler myAuthenticationFailureHandler;
+        private final AuthenticationManager authenticationManager;
+        private final RedisUtil redisUtil;
+        //这个是feign调用用户的服务，不用在意，其实就是通过手机号查询到用户的信息
+        private final UserClient userClient;
+
+        @Override
+        public void configure(HttpSecurity http) throws Exception {
+            //短信部分
+            SmsCodeAuthenticationFilter smsCodeAuthenticationFilter = new SmsCodeAuthenticationFilter();
+            //这个在SecurityConfig中注入过了
+            smsCodeAuthenticationFilter.setAuthenticationManager(authenticationManager);
+            //自定义的认证成功
+            smsCodeAuthenticationFilter.setAuthenticationSuccessHandler(myAuthenticationSuccessHandler);
+            //自定义的认证失败
+            smsCodeAuthenticationFilter.setAuthenticationFailureHandler(myAuthenticationFailureHandler);
+
+            SmsCodeAuthenticationProvider smsCodeAuthenticationProvider = new SmsCodeAuthenticationProvider();
+            smsCodeAuthenticationProvider.setUserDetailsService(new DefinedUserDetails(userClient));
+            smsCodeAuthenticationProvider.setRedisUtil(redisUtil);
+            //如下得出 Provider 类似于一个载具，在其之上加入拦截器
+            http.authenticationProvider(smsCodeAuthenticationProvider)
+                    .addFilterAfter(smsCodeAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+        }
+    }
+
+
+    /**
+    * 超级大坑，如果有两个自定义的类继承自UserDetailsService，且都是通过注入的形式，那么就会报错：java.lang.StackOverflowError: null，也就是堆栈溢出。暂时没有找到原因，
+    * 所以此处以内部类的形式，new出来就不会有这个问题
+    */
+    @Data
+    @AllArgsConstructor
+    class DefinedUserDetails implements UserDetailsService {
+
+        private UserClient userClient;
+
+        @Override
+        public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+            //用手机号查询用户的信息，这边虽然变量名叫username，实际上传递的是phone
+            R<UserInfo> info = userClient.queryByPhone(username);
+            //跳开具体的验证逻辑，简写了
+            UserInfo userInfo = info.getData();
+
+            return new User(userInfo.getSysUser().getUsername(), userInfo.getSysUser().getPassword(), AuthorityUtils.commaSeparatedStringToAuthorityList("ROLE_ADMIN"));
+        }
+    }
+    ~~~
+* 当然还需要将该类引入到Security的主配置类，使用 http.apply(smsCodeAuthenticationSecurityConfig);
+* 接下来就是利用postman进行测试，拦截的地址是在 localhost:9000/sms/login,这个地址是在 SmsCodeAuthenticationFilter 该类中定义的，且是POST方式
+* 两个核心的参数一个是手机号，另一个是验证码，分别是mobile/smsCode，同样分别在SmsCodeAuthenticationFilter/SmsCodeAuthenticationProvider中指定
+
+## 参考项目见：github   yz_demo，只看yz_auth和yz_admin即可
