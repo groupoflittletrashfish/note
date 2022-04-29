@@ -2099,6 +2099,10 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
             Collection<? extends GrantedAuthority> authorities = authentication.getAuthorities();
             //接下来就是判定是否存在，如果存在，则return放行
             for (GrantedAuthority authority : authorities) {
+                //如果想要先验证用户是否登录，就需要加上这一句，如果不用验证登录，那就可以去掉，ROLE_ANONYMOUS是Security定义的
+                if (StringUtils.equals(authority.getAuthority(), "ROLE_ANONYMOUS")) {
+                    throw new InsufficientAuthenticationException("请先登录");
+                }
                 for (ConfigAttribute c : collection) {
                     //ROLE_PASS该标识是在FilterInvocationSecurityMetadataSource中自己定义的，这里的意思也就是说如果是该标识，那么则放行
                     if (StringUtils.equals(c.getAttribute(), "ROLE_PASS")) {
