@@ -2135,6 +2135,158 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
         }
     }
     ~~~
+* 上面的代码其实会有一些问题，他会拦截所有的请求，包括登录登出等，所以需要改进，改进后的代码较为复杂一些，同样是这两个类
+    ~~~java
+    package com.yongzheng.config.dynamicInterception;
+
+    import com.yongzheng.feign.AdminClient;
+    import lombok.RequiredArgsConstructor;
+    import org.apache.commons.lang3.StringUtils;
+    import org.springframework.beans.factory.annotation.Autowired;
+    import org.springframework.security.access.ConfigAttribute;
+    import org.springframework.security.access.SecurityConfig;
+    import org.springframework.security.web.FilterInvocation;
+    import org.springframework.security.web.access.intercept.FilterInvocationSecurityMetadataSource;
+    import org.springframework.stereotype.Component;
+    import org.springframework.util.AntPathMatcher;
+    import org.springframework.web.util.UrlPathHelper;
+
+    import javax.servlet.http.HttpServletRequest;
+    import java.util.Collection;
+
+    /**
+    * @author ：liwuming
+    * @date ：Created in 2022/3/9 15:07
+    * @description ：动态拦截
+    * @modified By：
+    * @version: 1.0
+    */
+    @Component
+    @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+    public class MySecurityMetadataSource implements FilterInvocationSecurityMetadataSource {
+
+        private final AdminClient adminClient;
+        private final AntPathMatcher antPathMatcher = new AntPathMatcher();
+
+        @Override
+        public Collection<ConfigAttribute> getAttributes(Object o) throws IllegalArgumentException {
+            //客户端请求的Url
+            String requestUrl = ((FilterInvocation) o).getRequest().getRequestURI();
+            //如果地址是如下，那么设置一个自定义的标识，表示可以匿名访问,也就是说不需要登录也可以访问
+            if (isIgnore(((FilterInvocation) o).getRequest(), "/toLogin", "/login/**", "/logout/**", "/login.html", "/oauth/**", "/sms/**", "/captcha/**", "/swagger-ui/**", "/v2/api-docs")) {
+                return SecurityConfig.createList("ROLE_NO_LOGIN");
+            }
+            //根据拦截到的地址去sys_menu中进行匹配，找到菜单并且查看该菜单是否含有权限标识，如果有标识需要验证权限
+            String needPermission = adminClient.getPermissionWithUrl(requestUrl);
+            if (StringUtils.isNotBlank(needPermission)) {
+                //该请求需要XXX权限，那么将该权限保存起来，他将用在AccessDecisionManager类中
+                return SecurityConfig.createList(needPermission);
+            }
+
+            //如果地址没有找到对应的菜单，先自定义一个权限标识，该标识可以随意，他将用在AccessDecisionManager类中
+            return SecurityConfig.createList("ROLE_PASS");
+        }
+
+        @Override
+        public Collection<ConfigAttribute> getAllConfigAttributes() {
+            return null;
+        }
+
+        /**
+        * 这个方法要先返回true
+        */
+        @Override
+        public boolean supports(Class<?> aClass) {
+            return true;
+        }
+
+        /**
+        * 是否是忽略地址，使用的是Spring自带的URL比较工具类:AntPathMatcher
+        */
+        public boolean isIgnore(HttpServletRequest request, String... ignorePaths) {
+            UrlPathHelper urlPathHelper = new UrlPathHelper();
+            String path = urlPathHelper.getLookupPathForRequest(request);
+            AntPathMatcher matcher = new AntPathMatcher();
+            for (String ignorePath : ignorePaths) {
+                if (matcher.match(ignorePath, path)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    ~~~
+    ~~~java
+    package com.yongzheng.config.dynamicInterception;
+
+    import org.apache.commons.lang3.StringUtils;
+    import org.springframework.security.access.AccessDecisionManager;
+    import org.springframework.security.access.AccessDeniedException;
+    import org.springframework.security.access.ConfigAttribute;
+    import org.springframework.security.authentication.InsufficientAuthenticationException;
+    import org.springframework.security.core.Authentication;
+    import org.springframework.security.core.GrantedAuthority;
+    import org.springframework.stereotype.Component;
+
+    import java.util.Collection;
+
+    /**
+    * @author ：liwuming
+    * @date ：Created in 2022/4/25 16:10
+    * @description：
+    * @modified By：
+    * @version:
+    */
+    @Component
+    public class RoleAccessDecisionManager implements AccessDecisionManager {
+        @Override
+        public void decide(Authentication authentication, Object o, Collection<ConfigAttribute> collection) throws AccessDeniedException, InsufficientAuthenticationException {
+            //获取用户所拥有的权限，该权限在登录的时候已经被放入了
+            Collection<? extends GrantedAuthority> authorities = authentication.getAuthorities();
+            //接下来就是判定是否存在，如果存在，则return放行
+            for (GrantedAuthority authority : authorities) {
+                for (ConfigAttribute c : collection) {
+                    //如果用户是匿名，也就是说没有登录，ROLE_ANONYMOUS是Security定义的，需要分两种情况，一种是ROLE_NO_LOGIN，这个是MySecurityMetadataSource中自定义的，该标识表示允许匿名访问。另一种情况是需要登录访问
+                    if (StringUtils.equals(authority.getAuthority(), "ROLE_ANONYMOUS")) {
+                        //只要有ROLE_NO_LOGIN标识，就表示允许匿名访问
+                        if (StringUtils.equals(c.getAttribute(), "ROLE_NO_LOGIN")) {
+                            return;
+                        }
+                        //如果没有ROLE_NO_LOGIN的标识表示该地址不允许匿名访问，所以抛出未登录异常
+                        throw new InsufficientAuthenticationException("请先登录");
+                    }
+                    //如果有对应的权限，那么也放行
+                    if (c.getAttribute().equals(authority.getAuthority())) {
+                        return;
+                    }
+                    //ROLE_PASS该标识是在FilterInvocationSecurityMetadataSource中自己定义的，这里的意思也就是说如果是该标识，那么则放行，也就是说这个路径下不需要权限，只需要登录即可
+                    if (StringUtils.equals(c.getAttribute(), "ROLE_PASS")) {
+                        return;
+                    }
+                }
+            }
+            //权限不通过则抛出异常，如果自定义的授权失败处理器，那将会执行失败处理器的逻辑，也就是返回的错误信息
+            throw new AccessDeniedException("当前访问没有权限");
+        }
+
+        /**
+        * 返回值更改为true
+        */
+        @Override
+        public boolean supports(ConfigAttribute configAttribute) {
+            return true;
+        }
+
+        /**
+        * 返回值更改为true
+        */
+        @Override
+        public boolean supports(Class<?> aClass) {
+            return true;
+        }
+    }
+
+    ~~~
 * 完成之后我们需要在Security的配置中配置这两个类
     ~~~java
     @Configuration

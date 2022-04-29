@@ -262,7 +262,7 @@
             filters:
                 - StripPrefix=1
     ~~~
-* 此时便可以访问了，请求地址如下：http://localhost:5000/swagger-ui/ ，此处的http://localhost:5000是网关地址
+* 此时便可以访问了，请求地址如下：http://localhost:5000/swagger-ui/#/ ，此处的http://localhost:5000是网关地址
 * 但是很有可能会报错，如下图：
 * ![](./swagger_404.jpg)
 * 此时出现这个原因，就需要修改之前所说的那个问题，GatewaySwaggerResourcesProvider该类
@@ -276,3 +276,4 @@
 * 此时应该就可以正常访问了，但是直接说道的权限验证的问题，可以在此处添加token来发起请求
 * ![](swagger_Auth.jpg)
 * 然后填入token即可
+* 如果后端集成了url动态权限的话，那么需要忽略 /v2/api-docs路径
