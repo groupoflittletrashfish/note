@@ -15,6 +15,18 @@
 
 [toc]
 
+## 必看
+* <hl>下面很多的内容都是错的，实在太多太杂，先总结如下</hl>
+* 现在都是基于前后端的项目，所以网上的东西都是没太大用的
+* 先说说 作为认证服务器而言
+* 前后端分离场景：
+  * 基于oauth2，直接让前端通过/oauth/token的形式来获取token，常用的是密码和授权码模式
+  * 获取到token以后，前端携带token去访问任意的子服务，子服务又分为两种，一种是@EnableResourceServer，它是作为资源服务器的。被它修饰的子服务就算token不对也不会进行页面跳转，只会抛出错误
+  * 另一种：@EnableOAuth2Sso，即单点登录，也就是后端提供统一的登录路径。这种其实已经不常用了，都是分离的场景，没有意义。血坑，在token不对的情况下它会进行一个跳转到指定的登录页，如果没有就是原生提供的登录页面
+  * 所以分离的场景下，要使用 @EnableResourceServer这种方式
+* 这篇文章只能参照着看，太乱了
+* <hl>直接看 [前后端分离场景](%E5%89%8D%E5%90%8E%E7%AB%AF%E5%88%86%E7%A6%BB.md)</hl>
+
 ## 概念
 * 概念部分来不及笔记了，直接查看：https://www.bilibili.com/video/BV1VE411h7aL?p=3&spm_id_from=pageDriver
 
@@ -1922,7 +1934,7 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
     }
     ~~~
 
-### Security + Oauth2 + JWT 实现SSO（单点登录）
+### Security + Oauth2 + JWT 实现SSO（单点登录，非前后端分离）
 #### 项目结构
 * 上面的项目 springsecurityoauth2demo，直接将它作为授权服务器
 * 偷懒直接还是在springsecurityoauth2demo这个项目下新建一个模块，但是并不是父子关系，只是一个独立的项目放在下面方便调试，命名为:oauth2client01-demo,将它作为客户端
@@ -2193,7 +2205,7 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
 * > https://blog.csdn.net/a807719447/article/details/108732660
 
 
-## Security + JWT做token认证和授权（前后端分离）
+## Security + JWT做token认证和授权（前后端分离，这个代码有问题，并不是分离的情况用，不用看）
 ### 直接上代码
 * 编写一个jwt的工具类
     ~~~java
@@ -2564,7 +2576,7 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
             http.logout().logoutSuccessHandler(customLogoutSuccessHandler).logoutUrl("/logout");
     ~~~
 
-## <hl>单点登录（必看）</hl>
+## <hl>单点登录（很多错误，不用看了）</hl>
 * 以下是个人理解，也是踩过的坑
 * 目前的主流肯定是前后端分离，所以登陆完成以后一定是会返回一个token。这一块内容就是上面  Security + JWT做token认证和授权（前后端分离）   所描述的，即通过自定义的token去鉴权,所以网上查的资料很多都是通过postman去访问/oauth/token去获取的，这种方式应该是没有加入自定义的token鉴权下是可用的。按之前的代码，加入了JwtAuthenticationTokenFilter这个类，实测下来应该是会替代它默认的token验证方法。也就是说，不再需要通过访问/oauth/token去获取，之前的代码中在登录完成以后直接会输出一个token,只要使用该token去访问其他服务即可。如果分布式环境，不确定JWT自己控制的token在分布式环境下是否会有问题，大概说一下目前能理解的流程
   * 前端访问A服务
@@ -2575,7 +2587,7 @@ public class AuthorizationServerConfig extends AuthorizationServerConfigurerAdap
 * 另外，基于Session会话完成的单点登录，也就是   Security + Oauth2 + JWT 实现SSO（单点登录）  这一章 ，无法确定在分布式场景下是否能使用，虽然配置起来非常简单，基本按照上面配置的就可以了（当然可以使用jdbc加载的形式），然后可以启动N个客户端，单点登录很方便也很简单
 
 
-## 单点登录-实际案例
+## 单点登录-实际案例（不用看）
 ### 概述
 * 在实际的场景中，不可能将客户的服务信息写死，Security也支持从数据库中读取
 ### 重点代码
