@@ -21,6 +21,31 @@
 ## 官网
 * https://seata.io/zh-cn/docs/dev/mode/at-mode.html
 
+## Seata-AT模式
+### 核心组件
+* 参考 https://blog.csdn.net/abcd930704/article/details/121650029
+* Seata的核心组件
+  * 事务协调器 TC：维护全局和分支事务的状态，指示全局提交或者回滚。
+  * 资源管理者 RM：管理执行分支事务的那些资源，向TC注册分支事务、上报分支事务状态、控制分支事务的提交或者回滚。
+  * 事务管理者 TM：开启、提交或者回滚一个全局事务
+
+### 结构图
+* ![](./pic/AT模式结构.jpg)
+* Storage:库存服务
+* Order:订单服务
+* Account:账户服务
+* Business:业务入口，也就是Controller层的接口
+* 流程描述
+  * Business 是业务入口，在程序中会通过注解来说明他是一个全局事务，这时他的角色为 TM（事务管理者）。
+  * Business 会请求 TC（事务协调器，一个独立运行的服务，也就是Seata-server服务），说明自己要开启一个全局事务，TC 会生成一个全局事务ID（XID），并返回给 Business
+  * Business 得到 XID 后，开始调用微服务，例如调用 Storage
+  * Storage 会收到 XID，知道自己的事务属于这个全局事务。Storage 执行自己的业务逻辑，操作本地数据库。
+  * Storage 会把自己的事务注册到 TC，作为这个 XID 下面的一个分支事务，并且把自己的事务执行结果也告诉 TC。此时 Storage 的角色是 RM（资源管理者），资源是指本地数据库。
+  * Order、Account 的执行逻辑与 Storage 一致。
+  * 在各个微服务都执行完成后，TC 可以知道 XID 下各个分支事务的执行结果，TM（Business） 也就知道了。Business 如果发现各个微服务的本地事务都执行成功了，就请求 TC 对这个 XID 提交，否则回滚。
+  * TC 收到请求后，向 XID 下的所有分支事务发起相应请求。各个微服务收到 TC 的请求后，执行相应指令，并把执行结果上报 TC。
+
+
 ## 安装和服务端启动
 * 使用的版本以1.3.0为例
 * 下载地址：https://github.com/seata/seata/releases/tag/v1.3.0
