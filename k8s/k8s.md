@@ -35,7 +35,7 @@
   * <font color = 'red'>controller-manager</font>：处理集群中常规的后台任务，一个资源对应一个控制器
   * <font color = 'red'>etcd</font>：存储系统，用于保存集群中相关的数据
 * **Node**:工作节点
-  * kubeelet：Master派遣到Node上的节点代表，管理本机中的容器
+  * kubelet：Master派遣到Node上的节点代表，管理本机中的容器
   * kube-proxy：提供网络代理，负载均衡等操作
 
 ### 核心概念
@@ -1367,3 +1367,902 @@
   service/nginx        NodePort    10.0.0.127   <none>        80:30800/TCP   21m
   ~~~
 * 此时通过浏览器访问 http://192.168.25.132:30800/ 或者 http://192.168.25.131:30800/ 就可以看到Nginx的主页面了
+
+### Kubernetes集群命令工具kubectl
+#### kubectl概述
+* kubectl是Kubernetes的集群命令行工具，通过kubectl能对集群本身进行管理，并能在集群上进行容器化应用部署和安装
+#### 命令
+* 讲解几个比较重要的命令
+* 删除pod，比较特殊，如果直接删除pod会自动重启，可以删除deployment/nodeport/statefulset解决,这三个分别是三种控制器，后面会学到，以deployment为例
+  ~~~shell
+  kubectl get deployment
+  kubectl delete deployment [deployment_name]
+  ~~~
+* 查询所有的service服务
+  ~~~shell
+  kubectl get svc
+  ~~~
+* 删除指定的Service
+  ~~~shell
+  kubectl delete service [service_name]
+  ~~~
+* 由于命令较多，参看
+* >https://blog.csdn.net/qq_27184497/article/details/121765335
+
+### yaml文件初了解
+* 通常来讲，一般是不会使用 kubectl create 指令去创建资源的，而是通过yaml的形式，如下是一个简单yaml示例，该形式也叫做资源清单文件
+    ~~~yaml
+    # API版本号，可以通过 kubectl api-versions来获取版本
+    APIVersion: apps/v1
+    # 资源类型：可以通过 kubectl api-resources 来获取资源类型
+    kind: Deployment
+    # 资源元数据
+    Metadata:
+      name: Nginx-deployment
+      labels:
+        app: Nginx
+    # 资源规格
+    spec:
+      # 副本数量
+      replicas: 3
+      # 标签选择器
+      selector:
+        matchLabels:
+          app: Nginx
+      # Pod模板
+      template:
+        Metadata:
+          labels:
+            app: Nginx
+        # Pod规格
+        spec:
+          # 容器配置
+          containers:
+          - name: Nginx
+            image: Nginx:1.15.4
+            ports:
+            - containerPort: 80
+    ~~~
+* 快速编写yaml文件(方式一)
+  ~~~shell
+  kubectl create deployment web --image=nginx -o yaml --dry-run
+  ~~~
+* kubectl create deployment web --image=nginx 表示生成一个名为web的资源，-o yaml表示输出yaml文件，--dry-run表示尝试，并不是真正执行
+* 输出结果如下
+    ~~~yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: web
+      name: web
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: web
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: web
+        spec:
+          containers:
+          - image: nginx
+            name: nginx
+            resources: {}
+    status: {}
+    ~~~
+* 如果想要以文件形式输出，那么也可以追加一段输出的指令
+  ~~~shell
+  kubectl create deployment web --image=nginx -o yaml --dry-run > my.yaml
+  ~~~
+* 快速编写yaml文件(方式二)
+* 该方式的前提是已经安装了资源,输出到文件my.yaml，如果只想要打印出来去掉 --export > my.yaml即可
+  ~~~shell
+  kubectl get deployment nginx -o=yaml --export > my.yaml
+  ~~~~
+
+### Pod详解
+#### Pod的基本概念
+* Pod是k8s中的最小部署单元
+* k8s不会直接处理容器，而是Pod，Pod是由一个或多个容器组成的
+* 一个Pod中的容器共享网络命名空间
+* Pod是短暂的，每次启动都会生成一个新的ID
+
+#### Pod存在的意义
+* Pod是多进程设计，即每个Pod中包含多个容器，每个容器中包含一个应用
+* Pod存在也是为了亲密性应用。即Pod中的应用之间能够互相交互。同时也满足网络间的调用
+
+#### Pod实现机制
+* 共享网络机制
+  * ![](./pic/Pod结构图.jpg)
+  * 一个Pod中含有多个业务容器，在每个业务容器生成后都会将信息加入到根容器（Pause）之中
+  * 根容器（Pause）自己拥有独立的IP和Namespace
+  * 这样的话所有的容器都能在同一个Namespace下共享网络
+* 共享存储机制
+  * ![](./pic/Pod共享数据.jpg)
+  * Pod中将会存在一个数据卷，而所有的容器都将通过这个共享的数据卷来共享存储
+
+#### Pod镜像拉取策略
+* pod镜像拉取策略可以通过imagePullPolicy字段配置镜像拉取策略
+    ~~~yaml
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.14
+          imagePullPolicy: Always
+    ~~~
+  |值|说明|
+  |:-:|:-:|
+  |IfNotPresent|默认值，镜像在宿主机上不存在时才拉取|
+  |Always|每次创建pod都会重新拉取一次镜像|
+  |Never|永远不会主动拉取镜像，使用本地镜像，需要你手动拉取镜像下来|
+#### <span id="11">Pod 资源限制</span>
+* 顾名思义，在Master和Node之间的节点，可能性能不大一样。
+* Pod可以对节点进行要求限制，看如下的yaml
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: stress-pod
+    spec:
+      containers:
+      - name: stress
+        image: ikubernetes/stress-ng
+        command: ["/usr/bin/stress-ng", "-c 1", "-m 1", "--metrics-brief"]
+        resources:
+          requests: #下阈值，最小阈值
+            memory: "128Mi"
+            cpu: "200m"
+          limits:  #上阈值，最大阈值
+            memory: "512Mi"
+            cpu: "400m"
+    ~~~
+* 它限定了CPU和内存的上下阈值，request是最低保障，服务节点必须得满足该条件，limits 是限制，表示内存和CPU的使用不允许超过该限制，CPU的值是以m为单位的，简单理解200M=0.2核，400m=0.4核
+
+#### Pod重启策略
+* 即容器的退出后，需要做什么
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: nginx-pod
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: nginx-pod
+          image: nginx
+    ~~~
+  |值|说明|
+  |:-:|:-:|
+  |Always|pod中容器不论如何停止都将自动重启|
+  |OnFailure|Pod中容器非正常停止会自动重启，正常停止不会重启|
+  |Never|Pod中容器不论以任何方式停止，都不会自动重启|
+
+#### 容器的健康检查
+* Pod中容器的声明周期的两个钩子函数， PostStart 与 PreStop，其中， PostStart 是在容器创建后立即执行的，而 preStop 这个钩子函数则是在容器终止之前执行的，除了上面两个钩子函数之外，还有一项配置会影响到容器的生命周期，那就是健康检查的探针。
+* 在 Kubernetes 集群中，我们可以通过配置 liveness probe（存活探针）和 readingess probe（可读性探针）来影响容器的生存周期
+* liveness probe（存活探针）：
+  * 该探针主要功能是确定你的应用程序是否正在运行，通俗点将就是是否还活着。一般来说，如果你的程序一旦崩溃了， Kubernetes 就会立刻知道这个程序已经终止了，继而杀死该程序，而后会根据上面所提到过的Pod重启策略来进行后续的操作
+  * 其支持三种方式的健康检查
+    |值|说明|
+    |:-:|:-:|
+    |exec|执行一段Shell命令,返回码为0则表示成功|
+    |http|检测某个 http 请求|
+    |tcpSocket|使用此配置， kubelet 将尝试在指定端口上打开容器的套接字。如果可以建立连接，容器被认为是健康的，如果不能就认为是失败的。实际上就是检查端口|
+  * 如下就是三种的示例 
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: liveness-exec
+      labels:
+        test: liveness
+    spec:
+      containers:		//容器
+      - name: liveness	//容器名字
+        image: busybox		//镜像
+        args:			//args
+        - /bin/sh
+        - -c
+        - touch /tmp/healthy; sleep 30; rm -rf /tmp/healthy; sleep 600
+        livenessProbe:	//存活检查
+          exec:
+            command:	//命令
+            - cat
+            - /tmp/healthy
+          initialDelaySeconds: 5	 // 延迟探测时间
+          periodSeconds: 5			// 执行探测频率
+    ~~~ 
+  * 如上的配置代表：初次启动时延后5秒，之后每隔5秒执行一次cat /tmp/healthy 命令，如果命令执行成功了，则返回0，kubelet 就会认为当前这个容器是存活 
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      labels:
+        test: liveness
+      name: liveness-http
+    spec:
+      containers:
+      - name: liveness
+        image: cnych/liveness
+        args:
+        - /server
+        livenessProbe:
+          httpGet:
+            path: /healthz	//路径
+            port: 8080	//端口
+            httpHeaders:
+            - name: X-Custom-Header	//headers 名称
+              value: Awesome	//headers value
+          initialDelaySeconds: 3	 // 延迟探测时间
+          periodSeconds: 3	// 执行探测频率
+    ~~~
+  *  如上的配置代表：初次启动时延后3秒，之后每隔3秒执行一次，向该探针将向容器中的 server 的8080端口发送一个 HTTP GET 请求，如果 server 的 /heathyz 路径的 handler 返回一个成功的返回码，kubelet 就会认定该容器是活着
+      ~~~yaml
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: goproxy
+        labels:
+          app: goproxy
+      spec:
+        containers:
+        - name: goproxy
+          image: cnych/goproxy
+          ports:
+          - containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      ~~~      
+    * 如上，同时使用了readingess probe 和 liveness probe，容器启动后5秒后，kubelet将发送第一个readiness probe（可读性探针）。 该探针会去连接容器的8080端，如果连接成功，则该 Pod 将被标记为就绪状态。然后Kubelet将每隔10秒钟执行一次该检查。除了readiness probe之外，该配置还包括liveness probe。 容器启动15秒后，kubelet将运行第一个 liveness probe。 就像readiness probe一样，这将尝试去连接到容器的8080端口。如果liveness probe失败，容器将被杀死
+* readingess probe（可读性探针）： 
+  * 确定容器是否已经就绪可以接收流量过来了。这个探针通俗点讲就是说是否准备好了，现在可以开始工作了。只有当 Pod 中的容器都处于就绪状态的时候kubelet 才会认定该 Pod 处于就绪状态，因为一个 Pod 下面可能会有多个容器。如果处于非就绪状态就会将他从我们的工作队列中移除
+
+#### Pod的创建
+* 先查看下Pod的时序图
+* ![](./pic/Pod创建时序图.jpg)
+* 用户提交创建Pod请求，可以通过API Server的Rest API,也可用kubectl命令行工具，支持json和yaml
+* API Server处理用户请求，并将Pod数据存储到Etcd数据库中
+* Schedeuler通过API Server的watch机制，监听到要创建新的Pod
+* Schedeuler通过算法给pod分配节点，并将pod和对应节点绑定的信息交给apiserver，apiserver写到etcd。
+* kubelet从apiserver获取需要创建的pod信息，调用CNI接口给pod创建pod网络，调用CRI接口去启动容器，调用CSI进行存储卷的挂载。
+* kubelet调用Docker去创建容器，并将状态返回给API Server,在etcd中进行存储
+
+#### 影响Pod调度的因素
+* Pod的调度是指 Scheduler调度Pod到某一个节点之上，而有几个因素会影响到调度的结果
+* Pod 资源限制，也就是之前提到的 <hl>[资源限制](#11)</hl>,它会淘汰一部分不满足的节点
+* 节点选择器：简单理解，不同的节点被分成了不同的组，如environment:dev/prd/deloy，我们可以指定选择器来避开一些不满足的节点,environment并不是固定的，可以是任意键值对，如下：nodeSelector
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: podexample
+    spec:
+      nodeSelector:
+        environment: dev    #自定义 k/v形式
+      containers:
+      - name: nginx
+        image: nginx:1.15
+    ~~~
+* 如上就是节点选择器，当然前提是各个节点都有对应的K-V标签,这个需要去设置。首先是获取Node信息
+  ~~~shell
+  kubectl get nodes -o wide
+  ~~~
+  ~~~shell
+  NAME        STATUS   ROLES    AGE    VERSION   INTERNAL-IP      EXTERNAL-IP   OS-IMAGE                KERNEL-VERSION           CONTAINER-RUNTIME
+  k8smaster   Ready    master   4d6h   v1.18.0   192.168.25.128   <none>        CentOS Linux 7 (Core)   3.10.0-1160.el7.x86_64   docker://20.10.17
+  k8snode1    Ready    <none>   4d4h   v1.18.0   192.168.25.129   <none>        CentOS Linux 7 (Core)   3.10.0-1160.el7.x86_64   docker://20.10.17
+  k8snode2    Ready    <none>   4d4h   v1.18.0   192.168.25.130   <none>        CentOS Linux 7 (Core)   3.10.0-1160.el7.x86_64   docker://20.10.17
+  ~~~
+* 设置标签，k8smaster就是上面的对应的Name属性
+  ~~~shell
+  kubectl label node  k8smaster environment=dev
+  ~~~
+* 查看结果，其中有一段就是environment=dev
+  ~~~shell
+  kubectl get nodes --show-labels
+  ~~~
+  ~~~shell
+  k8smaster   Ready    master   4d6h   v1.18.0   beta.kubernetes.io/arch=amd64,beta.kubernetes.io/os=linux,environment=dev,kubernetes.io/arch=amd64,kubernetes.io/hostname=k8smaster,kubernetes.io/os=linux,node-role.kubernetes.io/master=
+  k8snode1    Ready    <none>   4d4h   v1.18.0   beta.kubernetes.io/arch=amd64,beta.kubernetes.io/os=linux,kubernetes.io/arch=amd64,kubernetes.io/hostname=k8snode1,kubernetes.io/os=linux
+  k8snode2    Ready    <none>   4d4h   v1.18.0   beta.kubernetes.io/arch=amd64,beta.kubernetes.io/os=linux,kubernetes.io/arch=amd64,kubernetes.io/hostname=k8snode2,kubernetes.io/os=linux
+  ~~~
+* 节点亲和性：有点类似于节点选择器，但是功能更为强大一些，且支持匹配
+  * 硬亲和（requiredDuringSchedulingIgnoredDuringExecutio）：必须满足约束条件，否则失败
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: nodeaffinity #pod名称
+      namespace: dev
+    spec:
+      containers:
+      - name: nginx
+        image: nginx: latest
+      affinity:  #亲和性设置
+        nodeAffinity: #设置node亲和性
+          requiredDuringSchedulingIgnoredDuringExecution: # 硬限制
+            nodeSelectorTerms:
+            - matchExpressions: # 匹配env的值在["aa","bb"]中的标签
+              - key: nodeenv
+                operator: In
+                values: ["aa","bb"]
+    ~~~ 
+  * 软亲和（preferredDuringSchedulingIgnoredDuringExecution）：如果有对应标签则优先运行到该节点，如果没有则随机
+    ~~~yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: with-node-affinity-pre
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: #软亲和
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: group
+                operator: In 
+                values:
+                - otherprod
+      containers:
+      - name: webdemo
+        image: nginx:1.15
+    ~~~
+  * 污点/容忍度：该属性其实是节点本身的属性，为节点添加污点属性，来让Pod避免分配到不适合的节点上
+    * 查看节点的污点属性
+      ~~~shell
+      kubectl describe node k8smaster | grep Taint
+      ~~~ 
+    * 污点值有三个：
+      * NoSchedule：一定不被调度
+      * PreferNoSchdule：尽量不被调度
+      * NoExecute：不会调度，同时也会驱逐该节点上已经存在的Pod
+    * 为某个节点添加污点,env_role=yes是自定义的K-V形式（目前看下来是用于污点容忍），NoSchedule也就是上面提到的三种类型
+        ~~~shell
+        kubectl taint node k8snode1 env_role=yes:NoSchedule
+        ~~~ 
+    * 此时再次创建pod，就会发现不会在k8snode1上创建
+      ~~~shell
+      kubectl create deployment web --image=nginx
+      kubectl get pods -o wide
+      ~~~ 
+      ~~~shell
+      NAME                    READY   STATUS    RESTARTS   AGE   IP           NODE       NOMINATED NODE   READINESS GATES
+      nginx-f89759699-b8s5v   1/1     Running   2          10d   10.244.2.4   k8snode2   <none>           <none>
+      web-5dcb957ccc-pdj58    1/1     Running   0          46s   10.244.2.5   k8snode2   <none>           <none>
+      ~~~
+    * 如果想要删除污点，格式有点奇怪，注意最后有个-
+      ~~~shell
+      kubectl taint node k8snode1 env_role:NoSchedule-
+      ~~~ 
+    * 污点容忍介绍：该配置还是在pod的yaml中完成，先给出一个示例,
+        ~~~yaml
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: dev
+
+        ---
+
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: nginx-pod
+          namespace: dev
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.17.1
+          # 污点容忍
+          tolerations:
+            #自定义的Key
+          - key: "env_role"
+            #条件
+            operator: "Equal"
+            value: "yes"
+            effect: "NoSchedule"
+        ~~~
+    * 如上，即使配置了污点：NoSchedule，但是只要在Pod配置了污点容忍，那还是会有可能被调度到该节点上  
+
+
+### Controller
+#### 概念
+* controller是在集群上管理和运行容器的对象，pod通过controller来实现应用的运维比如伸缩，滚动升级等。pod和controller之间通过label标签建立联系。
+
+#### deployment控制器
+* 该Controller是最常用的一个，它的主要应用场景：
+  * 部署无状态的应用
+  * 管理Pod和ReplicaSet
+  * 部署，滚动升级等功能
+* 最简单的部署方式,但这种只会在测试使用，一般都会使用yaml形式
+  ~~~shell
+  kubectl create deployment web --image=nginx
+  ~~~
+* 使用导出查看nginx镜像所使用的yaml文件
+  ~~~shell
+  kubectl create deployment web --image=nginx -o yaml --dry-run >web.yaml
+  ~~~
+* 获得如下
+    ~~~yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: web
+      name: web
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: web
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: web
+        spec:
+          containers:
+          - image: nginx
+            name: nginx
+            resources: {}
+    status: {}
+    ~~~
+* 核心的部分是 <hl>spec.selector.matchLabels 和 spec.template.metadata.labels</hl> 这两个属性，所以Controller与Pod是通过label去关联的，这两个值必须匹配
+* 通过指令加载yaml来完成部署
+  ~~~shell
+  kubectl apply -f web.yaml 
+  ~~~
+* 此时外网是无法访问的，需要对外发布，测试的时候可以使用指令来发布，但是正常情况下还是通过yaml形式，我们先输出一份示例的yaml
+  ~~~shell
+  kubectl expose deployment web --port=80 --type=NodePort --target-port=80 --name=web1 -o yaml >web1.yaml
+  ~~~
+    ~~~yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: "2022-07-12T03:02:15Z"
+      labels:
+        app: web
+      managedFields:
+      - apiVersion: v1
+        fieldsType: FieldsV1
+        fieldsV1:
+          f:metadata:
+            f:labels:
+              .: {}
+              f:app: {}
+          f:spec:
+            f:externalTrafficPolicy: {}
+            f:ports:
+              .: {}
+              k:{"port":80,"protocol":"TCP"}:
+                .: {}
+                f:port: {}
+                f:protocol: {}
+                f:targetPort: {}
+            f:selector:
+              .: {}
+              f:app: {}
+            f:sessionAffinity: {}
+            f:type: {}
+        manager: kubectl
+        operation: Update
+        time: "2022-07-12T03:02:14Z"
+      name: web1
+      namespace: default
+      resourceVersion: "1188263"
+      selfLink: /api/v1/namespaces/default/services/web1
+      uid: 467b933b-4bcb-4253-abe4-19c5c882eaec
+    spec:
+      clusterIP: 10.96.86.75
+      externalTrafficPolicy: Cluster
+      ports:
+      - nodePort: 31388
+        port: 80
+        protocol: TCP
+        targetPort: 80
+      selector:
+        app: web
+      sessionAffinity: None
+      type: NodePort
+    status:
+      loadBalancer: {}
+    ~~~
+* 同样，也要加载yaml来使之生效
+  ~~~shell
+  kubectl apply -f web1.yaml
+  ~~~ 
+* 启动完成后可以查看服务的端口等信息
+  ~~~shell
+  kubectl get pods,svc
+  ~~~
+  ~~~shell
+  NAME                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+  service/kubernetes   ClusterIP   10.96.0.1      <none>        443/TCP        16d
+  service/nginx        NodePort    10.98.94.126   <none>        80:30239/TCP   15d
+  service/web1         NodePort    10.96.86.75    <none>        80:31388/TCP   26h
+  ~~~
+* 此时就可以通过ip:31388来访问该Nginx了
+
+#### SatefulSet控制器
+* 首先先介绍一下无状态和有状态服务的差异
+* 无状态
+  * 多个服务实例对于同一个用户请求的响应结果是完全一致的
+  * 服务之间没有依赖关系，停止启动都不会影响其他pod
+  * 多个Pod创建的顺序是没有顺序的
+  * 可以任意的伸缩和扩容
+* 有状态
+  * 每个Pod会被分配一个唯一序号
+  * Pod启动,更新,销毁是按顺序进行
+  * 稳定的网络标识: Pod主机名,DNS地址不会随着Pod被重新调度而发生变化
+  * 稳定的持久化存储: Pod被重新调度后,仍然能挂载原有的PV,从而保证了数据的完整性和一致性
+* 创建一个有状态的应用，示例sts.yaml如下，<hl>这种yaml中间带三个横线是表示多个不同的yaml文件，其实就是把创建Pod和Service服务的yaml放在了一个文件里，所以执行这段之后既会创建Pod也会创建Service服务</hl>
+    ~~~yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: nginx
+      labels:
+        app: nginx
+    spec:
+      ports:
+      - port: 80
+        name: web
+        #此处必须是None
+      clusterIP: None
+      selector:
+        app: nginx
+
+    ---
+
+    apiVersion: apps/v1
+    # 需要加上这一段
+    kind: StatefulSet
+    metadata:
+      name: nginx-statefulset
+      namespace: default
+    spec:
+      # 指定使用的service
+      serviceName: nginx
+      replicas: 3
+      selector:
+        matchLabels:
+          app: nginx
+      template:
+        metadata:
+          labels:
+            app: nginx
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:latest
+            ports:
+            - containerPort: 80
+    ~~~
+* 创建pod
+  ~~~shell
+  kubectl apply -f sts.yaml
+  ~~~
+* 查看
+  ~~~shell
+  kubectl get pods,svc
+  ~~~
+  ~~~shell
+  NAME                   READY   STATUS    RESTARTS   AGE
+  nginx-statefulset-0    1/1     Running   0          2m41s
+  nginx-statefulset-1    1/1     Running   0          2m5s
+  nginx-statefulset-2    1/1     Running   0          14s
+  web-5dcb957ccc-9drxt   1/1     Running   0          3d23h
+
+  
+  NAME                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
+  service/kubernetes   ClusterIP   10.96.0.1       <none>        443/TCP        21d
+  service/nginx        ClusterIP   None            <none>        80/TCP         21m
+  service/web          NodePort    10.103.99.111   <none>        80:31738/TCP   157m
+  ~~~
+* 如上，三个Pod都有各自唯一的名称，且名为nginx的服务中CLUSTER-IP为None,这种也被称为无头Service
+
+#### DaemonSet控制器
+* DaemonSet确保集群中每个（部分）node运行一份pod副本，当node加入集群时创建pod，当node离开集群时回收pod。如果删除DaemonSet，其创建的所有pod也被删除，DaemonSet中的pod覆盖整个集群。
+* 如上概念，这个控制器的应用场景如 日志收集logstash
+* 以下是一份网上给出的yaml示例，此处先要了解该控制器的特点为主
+    ~~~yaml
+    apiVersion: apps/v1
+    kind: DaemonSet
+    metadata:
+      name: nginx-daemonset
+      labels:
+        app: nginx
+    spec:
+      selector:
+        matchLabels:
+          app: nginx
+      template:
+        metadata:
+          labels:
+            app: nginx
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.13.12
+            ports:
+            - containerPort: 80
+
+    ~~~
+* 创建容器
+  ~~~shell
+  kubectl apply -f ds.yaml
+  ~~~
+* 查看
+  ~~~shell
+  kubectl get pods -o wide
+  ~~~
+  ~~~shell
+  NAME                    READY   STATUS    RESTARTS   AGE     IP            NODE       NOMINATED NODE   READINESS GATES
+  nginx-daemonset-p24v9   1/1     Running   0          6m55s   10.244.1.16   k8snode1   <none>           <none>
+  nginx-daemonset-sb5st   1/1     Running   0          6m55s   10.244.2.20   k8snode2   <none>           <none>
+  ~~~
+* 如上发现了一个问题，即并没有在主节点上创建Pod,这个是因为官方并不推荐在主节点上去创建，如果想要在主节点也创建，则需要加入一个字段
+    ~~~yaml
+    apiVersion: apps/v1
+    kind: DaemonSet
+    metadata:
+      name: nginx-daemonset
+      labels:
+        app: nginx
+    spec:
+      selector:
+        matchLabels:
+          app: nginx
+      template:
+        metadata:
+          labels:
+            app: nginx
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.13.12
+            ports:
+            - containerPort: 80
+          tolerations:
+          - key: node-role.kubernetes.io/master
+            effect: NoSchedule
+    ~~~
+* 当然需要先删除之前创建的Pod
+  ~~~shell
+  kubectl delete daemonset --all
+  ~~~
+* 再依次执行刚才的操作
+  ~~~shell
+  kubectl apply -f ds.yaml
+  kubectl get pods -o wide
+  ~~~
+  ~~~shell
+  NAME                    READY   STATUS    RESTARTS   AGE    IP            NODE        NOMINATED NODE   READINESS GATES
+  nginx-daemonset-94wj5   1/1     Running   0          5m3s   10.244.0.5    k8smaster   <none>           <none>
+  nginx-daemonset-n4vsb   1/1     Running   0          5m3s   10.244.2.21   k8snode2    <none>           <none>
+  nginx-daemonset-nczm8   1/1     Running   0          5m3s   10.244.1.17   k8snode1    <none>           <none>
+  ~~~
+* 很明显，DaemonSet是会在每个节点上都创建一个Pod,由于没有环境去测试，正常来讲如果删除或者新增节点，它会自动在新节点上添加该Pod
+
+#### 升级
+* 所谓升级，即应用的版本升级，而在创建应用的时候是可以指定应用的版本的，还是以nginx的yaml为示例
+    ~~~yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: web
+      name: web
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: web
+      strategy: {}
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: web
+        spec:
+          containers:
+          - image: nginx:1.14
+            name: nginx
+            resources: {}
+    status: {}
+    ~~~
+* 此处指定了nginx的版本为 1.14
+* 创建应用
+  ~~~shell
+  kubectl apply -f web.yaml
+  ~~~
+* 升级指令
+  ~~~shell
+  kubectl set image deployment web nginx=nginx:1.15
+  ~~~
+* 查看升级是否成功
+  ~~~shell
+  kubectl rollout status deployment web
+  ~~~
+* 结果如下表示成功
+  ~~~shell
+  deployment "web" successfully rolled out
+  ~~~
+
+#### 版本回滚
+* 首先查看历史的版本
+  ~~~shell
+  kubectl rollout history deployment web
+  ~~~
+* 结果如下,由于在创建的时候并没有指定record所以都是None
+  ~~~shell
+  REVISION  CHANGE-CAUSE
+  1         <none>
+  2         <none>
+  ~~~
+* 如果想回退到上一个版本，直接使用
+  ~~~shell
+  kubectl rollout undo deployment web
+  ~~~
+* 如果想指定到回滚到指定的版本,to-revision也就是上面查询的历史版本的REVISION字段
+  ~~~shell
+  kubectl rollout undo deployment web --to-revision=2
+  ~~~
+
+#### 弹性伸缩
+* 所谓弹性伸缩，其实也就是副本数量的增加与减少，简单理解为启动/减少一个相同的应用，一个简单的示例，副本数修改为3个
+  ~~~shell
+  kubectl scale deployment web --replicas=3
+  ~~~
+* 此时再次查看pod信息
+  ~~~shell
+  kubectl get pods
+  ~~~
+  ~~~shell
+  NAME                   READY   STATUS    RESTARTS   AGE
+  web-7d9697b7f8-c45h8   1/1     Running   0          63s
+  web-7d9697b7f8-nt7q9   1/1     Running   0          3m49s
+  web-7d9697b7f8-snrwn   1/1     Running   0          63s
+  ~~~
+
+### Service
+#### 概念
+* 其实简而言之，Service的作用就是服务发现，即和Dubbo和nacos等是类似的功能。每个Pod都会将自己的IP注册到Service,从而实现服务的发现和负载均衡
+
+#### Service与Pod的关系
+* Service和Controller类型，同样是以标签 Label Selector 来访问Pod组
+
+#### 常用Service类型
+* ClusterIp：默认类型，自动分配一个仅Cluster内部可以访问的虚拟IP
+* NodePort：在ClusterIP基础上为Service在每台机器上绑定一个端口，这样就可以通过: NodePort来访问该服务。其实这个操作也就是暴露端口的操作，如上面提到的nginx端口暴露出来给浏览器访问
+* LoadBalancer：在NodePort的基础上，借助Cloud Provider创建一个外部负载均衡器，并将请求转发到NodePort
+* 先新建一个pod,由于是测试，所以不通过yaml来创建了，直接指令形式创建
+  ~~~shell
+  kubectl create deployment web --image=nginx
+  ~~~
+* 如果想指定Service的类型，那么也需要在yaml中指定，先获取网络配置的yaml文件
+  ~~~shell
+  kubectl expose deployment web --port=80 --target-port=80 -o yaml --dry-run > service.yaml
+  ~~~
+    ~~~yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: web
+      name: web
+    spec:
+      ports:
+      - port: 80
+        protocol: TCP
+        targetPort: 80
+      selector:
+        app: web
+    status:
+      loadBalancer: {}
+    ~~~ 
+* 通过yaml的形式去暴露端口
+  ~~~shell
+  kubectl apply -f service.yaml
+  ~~~
+  ~~~shell
+  NAME         TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+  kubernetes   ClusterIP   10.96.0.1      <none>        443/TCP   21d
+  web          ClusterIP   10.106.3.144   <none>        80/TCP    8s
+  ~~~
+* 此时就能看到一条web的Service,其中TYPE的类型是默认的ClusterIP，接下来验证一下是否只能内部访问，我们可以获取到启动应用的虚拟IP地址
+  ~~~shell
+  kubectl get pods -o wide
+  ~~~
+  ~~~shell
+  NAME                   READY   STATUS    RESTARTS   AGE     IP            NODE       NOMINATED NODE   READINESS GATES
+  web-5dcb957ccc-9drxt   1/1     Running   0          9m24s   10.244.2.13   k8snode2   <none>           <none>
+  ~~~
+* 然后可以通过另一台子节点的虚拟机（192.168.25.129)
+  ~~~shell
+  curl 10.244.2.13
+  ~~~
+  ~~~shell
+  <!DOCTYPE html>
+  <html>
+  <head>
+  <title>Welcome to nginx!</title>
+  <style>
+  html { color-scheme: light dark; }
+  body { width: 35em; margin: 0 auto;
+  font-family: Tahoma, Verdana, Arial, sans-serif; }
+  </style>
+  </head>
+  <body>
+  <h1>Welcome to nginx!</h1>
+  <p>If you see this page, the nginx web server is successfully installed and
+  working. Further configuration is required.</p>
+
+  <p>For online documentation and support please refer to
+  <a href="http://nginx.org/">nginx.org</a>.<br/>
+  Commercial support is available at
+  <a href="http://nginx.com/">nginx.com</a>.</p>
+
+  <p><em>Thank you for using nginx.</em></p>
+  </body>
+  </html>
+  ~~~
+* 如上即表示可以正常访问
+* 接下来测试NodePort类型，修改service.yaml文件如下
+    ~~~yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: web
+      name: web
+    spec:
+      ports:
+      - port: 80
+        protocol: TCP
+        targetPort: 80
+      selector:
+        app: web
+      type: NodePort
+    status:
+      loadBalancer: {}
+    ~~~
+* 由于之前测试的时候service已经启动了，所以先删除一下
+  ~~~shell
+  kubectl get svc
+  kubectl delete service web
+  ~~~
+* 重新暴露一下服务
+  ~~~shell
+  kubectl apply -f service.yaml
+  ~~~
+* 查看Service信息
+  ~~~shell
+  kubectl get svc
+  ~~~~
+  ~~~shell
+  NAME         TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
+  kubernetes   ClusterIP   10.96.0.1       <none>        443/TCP        21d
+  web          NodePort    10.103.99.111   <none>        80:31738/TCP   7s
+  ~~~
+* 如上，TYPE类型为NodePort，且在PORT下有对应的映射端口，直接通过外部浏览器访问即可，此处就不做过多说明
+* 最后一种类型 LoadBalancer ，需要配合共有云服务，由于没有该环境，所以此处不做过多赘述，需要的时候自行百度
